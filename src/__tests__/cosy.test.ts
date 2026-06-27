@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   getQoderBaseUrl,
-  getQoderCNDirectModel,
-  getQoderCNFriendlyModelInfo,
   getQoderCenterUrl,
   getQoderChatURL,
+  getQoderCNDirectModel,
+  getQoderCNFriendlyModelInfo,
   getQoderExchangeURL,
   getQoderManageUrl,
   getQoderMode,
@@ -226,7 +226,11 @@ describe("toQoderCNFriendlyModel", () => {
   });
 
   it("preserves extra fields", () => {
-    const result = toQoderCNFriendlyModel({ id: "auto", name: "Auto", extra: "field" } as any);
+    const result = toQoderCNFriendlyModel({ id: "auto", name: "Auto", extra: "field" } as {
+      id: string;
+      name: string;
+      extra: string;
+    });
     expect(result.extra).toBe("field");
   });
 

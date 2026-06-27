@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PAT_REFRESH_PREFIX, decodePatRefresh, encodePatRefresh, isPatRefresh } from "../pat.js";
+import { decodePatRefresh, encodePatRefresh, isPatRefresh, PAT_REFRESH_PREFIX } from "../pat.js";
 
 // ── isPatRefresh ──────────────────────────────────────────────────────────
 

@@ -1,10 +1,10 @@
+import type { Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AssistantMessage, AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { ThinkingTagParser } from "../thinking-parser.js";
 
 function createMockStream() {
-  const events: any[] = [];
-  const push = vi.fn((event: any) => events.push(event));
+  const events: AssistantMessageEvent[] = [];
+  const push = vi.fn((event: AssistantMessageEvent) => events.push(event));
   const stream = {
     push,
     end: vi.fn(),
@@ -19,10 +19,17 @@ function createOutput(): AssistantMessage {
   return {
     role: "assistant",
     content: [],
-    api: "qoder-api" as any,
+    api: "qoder-api" as Api,
     provider: "qoder",
     model: "test",
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
     stopReason: "stop",
     timestamp: Date.now(),
   } as AssistantMessage;
@@ -163,7 +170,7 @@ describe("ThinkingTagParser", () => {
 
     const textBlocks = output.content.filter((c) => c.type === "text");
     expect(textBlocks.length).toBeGreaterThanOrEqual(1);
-    const allText = textBlocks.map((c: any) => c.text).join("");
+    const allText = textBlocks.map((c) => (c as { type: string; text: string }).text).join("");
     expect(allText).toContain("Hello");
     expect(allText).toContain("<think");
   });
@@ -198,7 +205,7 @@ describe("ThinkingTagParser", () => {
     parser.processChunk("Hi");
     parser.finalize();
 
-    const eventTypes = pushMock.mock.calls.map((c: any) => c[0].type);
+    const eventTypes = pushMock.mock.calls.map((c) => c[0].type);
     expect(eventTypes).toContain("text_start");
     expect(eventTypes).toContain("text_delta");
   });
@@ -208,7 +215,7 @@ describe("ThinkingTagParser", () => {
     parser.processChunk("<thinking>deep</thinking>");
     parser.finalize();
 
-    const eventTypes = pushMock.mock.calls.map((c: any) => c[0].type);
+    const eventTypes = pushMock.mock.calls.map((c) => c[0].type);
     expect(eventTypes).toContain("thinking_start");
     expect(eventTypes).toContain("thinking_delta");
     expect(eventTypes).toContain("thinking_end");

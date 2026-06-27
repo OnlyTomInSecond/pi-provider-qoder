@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import type { Message, Tool } from "@earendil-works/pi-ai";
+import { describe, expect, it } from "vitest";
 import { getContentText, transformMessagesForQoder, transformTools } from "../transform.js";
 
 // ── getContentText ────────────────────────────────────────────────────────
@@ -104,9 +104,7 @@ describe("transformMessagesForQoder", () => {
   });
 
   it("skips assistant messages with aborted stopReason", () => {
-    const msgs = [
-      { role: "assistant", content: "aborted", stopReason: "aborted" },
-    ] as unknown as Message[];
+    const msgs = [{ role: "assistant", content: "aborted", stopReason: "aborted" }] as unknown as Message[];
     const result = transformMessagesForQoder(msgs);
     expect(result).toHaveLength(0);
   });
@@ -136,7 +134,7 @@ describe("transformMessagesForQoder", () => {
       },
     ] as unknown as Message[];
     const result = transformMessagesForQoder(msgs);
-    const content = result[0].content as any[];
+    const content = result[0].content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
     expect(content).toHaveLength(2);
     expect(content[0]).toEqual({ type: "text", text: "look at " });
     expect(content[1]).toEqual({
@@ -163,8 +161,13 @@ describe("transformMessagesForQoder", () => {
     const result = transformMessagesForQoder(msgs);
     expect(result[0].role).toBe("assistant");
     expect(result[0].content).toBe("I'll read the file");
-    expect((result[0] as any).tool_calls).toHaveLength(1);
-    expect((result[0] as any).tool_calls[0]).toMatchObject({
+    const msg0 = result[0] as {
+      role: string;
+      content: unknown;
+      tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+    };
+    expect(msg0.tool_calls).toHaveLength(1);
+    expect(msg0.tool_calls?.[0]).toMatchObject({
       id: "call_1",
       type: "function",
       function: {
@@ -234,7 +237,8 @@ describe("transformMessagesForQoder", () => {
       },
     ] as unknown as Message[];
     const result = transformMessagesForQoder(msgs);
-    expect((result[0] as any).content).toBeNull();
-    expect((result[0] as any).tool_calls).toHaveLength(1);
+    const msg0 = result[0] as { role: string; content: unknown; tool_calls?: unknown[] };
+    expect(msg0.content).toBeNull();
+    expect(msg0.tool_calls).toHaveLength(1);
   });
 });

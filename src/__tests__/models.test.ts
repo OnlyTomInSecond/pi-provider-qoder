@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ZERO_COST, staticCnModels, staticModels } from "../models.js";
+import { staticCnModels, staticModels, ZERO_COST } from "../models.js";
 
 // ── staticModels ──────────────────────────────────────────────────────────
 
