@@ -70,8 +70,6 @@ export function getQoderBaseUrl(mode?: string): string {
   return isQoderCNMode(mode) ? "https://gateway.qoder.com.cn/" : "https://api3.qoder.sh/";
 }
 
-export const QODER_CN_DIRECT_BASE_URL = getQoderBaseUrl("cn");
-
 export function getQoderOpenApiUrl(mode?: string): string {
   return isQoderCNMode(mode) ? "https://openapi.qoder.com.cn" : "https://openapi.qoder.sh";
 }

@@ -5,9 +5,6 @@ import type {
   ThinkingContent,
 } from "@earendil-works/pi-ai";
 
-export const THINKING_START_TAG = "<thinking>";
-export const THINKING_END_TAG = "</thinking>";
-
 const THINKING_TAG_VARIANTS: Array<{ open: string; close: string }> = [
   { open: "<thinking>", close: "</thinking>" },
   { open: "<think>", close: "</think>" },
@@ -38,7 +35,7 @@ export class ThinkingTagParser {
   private thinkingBlockIndex: number | null = null;
   private textBlockIndex: number | null = null;
   private lastTextBlockIndex: number | null = null;
-  private activeEndTag: string = THINKING_END_TAG;
+  private activeEndTag: string = THINKING_TAG_VARIANTS[0].close;
 
   constructor(
     private output: AssistantMessage,

@@ -24,6 +24,8 @@
     "lint": "node node_modules/@biomejs/biome/bin/biome check .",
     "lint:fix": "node node_modules/@biomejs/biome/bin/biome check --write .",
     "format": "node node_modules/@biomejs/biome/bin/biome format --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prepare": "npm run build",
     "prepublishOnly": "npm run check && npm run build"
   },
@@ -37,7 +39,8 @@
     "@earendil-works/pi-ai": "^0.80.2",
     "@earendil-works/pi-coding-agent": "^0.80.2",
     "esbuild": "^0.28.1",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.9"
   },
   "repository": {
     "type": "git",
