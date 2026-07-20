@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-import { getMachineId, getQoderCNPat, getQoderMode, getQoderRefreshURL, isQoderCNMode } from "./cosy.js";
+import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { getMachineId, getQoderMode, getQoderRefreshURL, isQoderCNMode } from "./cosy.js";
 import { interactiveLogin } from "./login.js";
 import { updateQoderModelsCache } from "./models.js";
 import { credentialsFromPat, decodePatRefresh, isPatRefresh } from "./pat.js";
@@ -15,6 +16,28 @@ export interface QoderCredentials extends OAuthCredentials {
 }
 
 const AUTH_FILE = join(homedir(), ".pi", "agent", "auth.json");
+
+/** Return the PAT exposed through the environment for a provider mode. */
+export function getQoderPatForMode(mode: string): string {
+  if (isQoderCNMode(mode)) {
+    return process.env.QODERCN_API_KEY || process.env.QODERCN_PERSONAL_ACCESS_TOKEN || process.env.QODERCN_PAT || "";
+  }
+  return process.env.QODER_API_KEY || process.env.QODER_PERSONAL_ACCESS_TOKEN || process.env.QODER_PAT || "";
+}
+
+/** Exchange an environment PAT before pi resolves its initial model. */
+export async function autoLoginQoderFromEnvironment(providerID: string, mode: string): Promise<void> {
+  const pat = getQoderPatForMode(mode);
+  if (!pat) return;
+
+  const authStorage = AuthStorage.create();
+  if (authStorage.get(providerID)) return;
+
+  const credentials = await credentialsFromPat(pat, mode);
+  authStorage.set(providerID, { type: "oauth", ...credentials });
+  const qCreds = credentials as QoderCredentials;
+  updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode).catch(() => {});
+}
 
 /**
  * Read the Qoder identity (userID/email/name/machineID) from pi's own auth
@@ -41,7 +64,7 @@ async function loginQoderForMode(callbacks: OAuthLoginCallbacks, mode: string): 
   // 1. Try environment variables first (PAT). A PAT (pt-...) must be exchanged
   //    for a short-lived job token before it can be used — credentialsFromPat
   //    handles the exchange + identity resolution.
-  const pat = isQoderCNMode(mode) ? getQoderCNPat() : process.env.QODER_PERSONAL_ACCESS_TOKEN || process.env.QODER_PAT;
+  const pat = getQoderPatForMode(mode);
   if (pat) {
     try {
       const creds = await credentialsFromPat(pat, mode);

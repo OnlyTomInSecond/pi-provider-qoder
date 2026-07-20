@@ -8,7 +8,14 @@ import {
   toQoderCNFriendlyModel,
 } from "./cosy.js";
 import { getCachedModels, isCacheStale, staticCnModels, staticModels, updateQoderModelsCache } from "./models.js";
-import { getCachedCredentials, loginQoder, loginQoderCN, refreshQoderToken, refreshQoderTokenCN } from "./oauth.js";
+import {
+  autoLoginQoderFromEnvironment,
+  getCachedCredentials,
+  loginQoder,
+  loginQoderCN,
+  refreshQoderToken,
+  refreshQoderTokenCN,
+} from "./oauth.js";
 import { streamQoder } from "./stream.js";
 import { fetchQoderUsage, fetchQoderUsageCN } from "./usage.js";
 
@@ -57,7 +64,19 @@ function registerQoderProvider(pi: ExtensionAPI, providerID: string, mode: strin
   });
 }
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
+  for (const [providerID, mode] of [
+    ["qoder", getQoderMode()],
+    ["qoder-cn", "cn"],
+  ] as const) {
+    try {
+      await autoLoginQoderFromEnvironment(providerID, mode);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[pi-provider-qoder] Automatic login failed for ${providerID}: ${message}`);
+    }
+  }
+
   // Refresh the models cache once per session at startup if it is missing or
   // stale (>1h old), rather than on every message in the stream hot path.
   // Login/refresh are the other rebuild triggers; this covers the case where

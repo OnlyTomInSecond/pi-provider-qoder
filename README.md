@@ -52,11 +52,14 @@ Global Qoder:
 
 - Run `/login qoder` and choose **Use API Key (PAT)**, then paste the token.
 - Or set `QODER_PERSONAL_ACCESS_TOKEN` (or `QODER_PAT`) before starting pi.
+- `QODER_API_KEY` is also accepted; when set, pi automatically exchanges it
+  and logs the provider in during startup.
 
 Qoder China:
 
 - Run `/login qoder-cn`, then paste the CN PAT.
 - Or set `QODERCN_PERSONAL_ACCESS_TOKEN` (or `QODERCN_PAT`) before starting pi.
+- `QODERCN_API_KEY` is also accepted and triggers the same automatic startup login.
 
 > The exchanged job token is short-lived; the provider transparently re-exchanges
 > the stored PAT when it expires.
