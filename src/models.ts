@@ -19,7 +19,7 @@ export interface QoderModelEntry {
   display_name?: string;
   max_input_tokens?: number;
   max_output_tokens?: number;
-  context_config?: Record<string, { token_count?: number }>;
+  context_config?: Record<string, { token_count?: number; is_default?: boolean }>;
   is_vl?: boolean;
   is_reasoning?: boolean;
   thinking_config?: { enabled?: { efforts?: unknown } };
@@ -358,7 +358,7 @@ export function getCachedModelConfig(modelKey: string, mode?: string): QoderMode
     try {
       const data = JSON.parse(readFileSync(cachePath, "utf8"));
       if (data?.configs?.[modelKey]) {
-        return data.configs[modelKey] as QoderModelEntry;
+        return withMaxContextAsDefault(data.configs[modelKey] as QoderModelEntry);
       }
     } catch {}
   }
@@ -392,6 +392,27 @@ export function getCachedModelConfig(modelKey: string, mode?: string): QoderMode
   }
 
   return null;
+}
+
+/** Prefer the largest context option when Qoder exposes selectable contexts. */
+function withMaxContextAsDefault(entry: QoderModelEntry): QoderModelEntry {
+  const contextConfig = entry.context_config;
+  if (!contextConfig || typeof contextConfig !== "object") return entry;
+
+  const maxTokenCount = Math.max(
+    ...Object.values(contextConfig).map((config) => (typeof config?.token_count === "number" ? config.token_count : 0)),
+  );
+  if (maxTokenCount <= 0) return entry;
+
+  return {
+    ...entry,
+    context_config: Object.fromEntries(
+      Object.entries(contextConfig).map(([name, config]) => [
+        name,
+        { ...config, is_default: config.token_count === maxTokenCount },
+      ]),
+    ),
+  };
 }
 
 export function isCacheStale(mode?: string): boolean {
