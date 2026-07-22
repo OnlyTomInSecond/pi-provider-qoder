@@ -64,6 +64,21 @@ function registerQoderProvider(pi: ExtensionAPI, providerID: string, mode: strin
   });
 }
 
+async function refreshModelsAtStartup(providerID: string, mode: string): Promise<void> {
+  if (!isCacheStale(mode)) return;
+
+  const credentials = getCachedCredentials("", providerID);
+  if (!credentials?.access) return;
+
+  await updateQoderModelsCache(
+    credentials.access,
+    credentials.userID || "qoder-user",
+    credentials.name || (isQoderCNMode(mode) ? "Qoder CN User" : "Qoder User"),
+    credentials.email || getQoderUserEmailFallback(mode),
+    mode,
+  );
+}
+
 export default async function (pi: ExtensionAPI) {
   for (const [providerID, mode] of [
     ["qoder", getQoderMode()],
@@ -71,6 +86,7 @@ export default async function (pi: ExtensionAPI) {
   ] as const) {
     try {
       await autoLoginQoderFromEnvironment(providerID, mode);
+      await refreshModelsAtStartup(providerID, mode);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[pi-provider-qoder] Automatic login failed for ${providerID}: ${message}`);

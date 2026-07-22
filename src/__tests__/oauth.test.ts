@@ -1,5 +1,12 @@
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { updateQoderModelsCache } from "../models.js";
 import { autoLoginQoderFromEnvironment, getCachedCredentials, getQoderPatForMode } from "../oauth.js";
+import { credentialsFromPat } from "../pat.js";
+
+const AUTH_FILE = join(homedir(), ".pi", "agent", "auth.json");
 
 vi.mock("../pat.js", () => ({
   credentialsFromPat: vi.fn().mockResolvedValue({
@@ -26,14 +33,18 @@ vi.mock("../models.js", () => ({
 
 describe("oauth autoLoginQoderFromEnvironment", () => {
   const originalEnv = process.env;
+  let originalAuth: string | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
+    originalAuth = existsSync(AUTH_FILE) ? readFileSync(AUTH_FILE, "utf8") : undefined;
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    if (originalAuth === undefined) rmSync(AUTH_FILE, { force: true });
+    else writeFileSync(AUTH_FILE, originalAuth, "utf8");
   });
 
   it("extracts PAT correctly from env for global and CN mode", () => {
@@ -51,5 +62,29 @@ describe("oauth autoLoginQoderFromEnvironment", () => {
 
     await autoLoginQoderFromEnvironment("qoder-test-provider", "global");
     expect(getCachedCredentials("mock-token", "qoder-test-provider")).toBeNull();
+  });
+
+  it("re-exchanges an environment PAT even when cached credentials exist", async () => {
+    process.env.QODER_PERSONAL_ACCESS_TOKEN = "pt-global-new-account";
+    const auth = existsSync(AUTH_FILE) ? JSON.parse(readFileSync(AUTH_FILE, "utf8")) : {};
+    auth["qoder-test-provider"] = {
+      type: "oauth",
+      access: "old-access-token",
+      refresh: "old-refresh-token",
+      expires: Date.now() + 3600000,
+      userID: "old-user",
+    };
+    writeFileSync(AUTH_FILE, JSON.stringify(auth), "utf8");
+
+    await autoLoginQoderFromEnvironment("qoder-test-provider", "global");
+
+    expect(credentialsFromPat).toHaveBeenCalledWith("pt-global-new-account", "global");
+    expect(updateQoderModelsCache).toHaveBeenCalledWith(
+      "mock-access-token",
+      "mock-user-123",
+      "Test User",
+      "test@example.com",
+      "global",
+    );
   });
 });

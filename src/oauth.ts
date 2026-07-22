@@ -49,8 +49,10 @@ export async function autoLoginQoderFromEnvironment(providerID: string, mode: st
   const pat = getQoderPatForMode(mode);
   if (!pat) return;
 
-  if (getCachedCredentials("", providerID)) return;
-
+  // An explicitly supplied PAT is authoritative. The auth file only stores
+  // the exchanged job token, so it cannot tell us whether the environment
+  // token changed. Re-exchange it on startup to avoid silently using an old
+  // account's credentials.
   const credentials = await credentialsFromPat(pat, mode);
 
   if (typeof AuthStorage !== "undefined" && typeof AuthStorage?.create === "function") {
@@ -65,7 +67,9 @@ export async function autoLoginQoderFromEnvironment(providerID: string, mode: st
   }
 
   const qCreds = credentials as QoderCredentials;
-  updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode).catch(() => {});
+  // Wait for the model cache before the provider is registered. This matters
+  // for `pi --list-models`, which can exit before background work completes.
+  await updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode);
 }
 
 /**
