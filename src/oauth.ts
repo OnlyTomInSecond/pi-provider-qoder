@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
 import { getMachineId, getQoderMode, getQoderRefreshURL, isQoderCNMode } from "./cosy.js";
@@ -25,16 +25,45 @@ export function getQoderPatForMode(mode: string): string {
   return process.env.QODER_API_KEY || process.env.QODER_PERSONAL_ACCESS_TOKEN || process.env.QODER_PAT || "";
 }
 
+function saveCredentialsToAuthFile(providerID: string, credentials: OAuthCredentials): void {
+  try {
+    const dir = dirname(AUTH_FILE);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+    }
+    let auth: Record<string, unknown> = {};
+    if (existsSync(AUTH_FILE)) {
+      try {
+        auth = JSON.parse(readFileSync(AUTH_FILE, "utf-8"));
+      } catch {}
+    }
+    auth[providerID] = { type: "oauth", ...credentials };
+    writeFileSync(AUTH_FILE, JSON.stringify(auth, null, 2), { encoding: "utf-8", mode: 0o600 });
+  } catch (err) {
+    console.error(`[pi-provider-qoder] Failed to write auth storage for ${providerID}:`, err);
+  }
+}
+
 /** Exchange an environment PAT before pi resolves its initial model. */
 export async function autoLoginQoderFromEnvironment(providerID: string, mode: string): Promise<void> {
   const pat = getQoderPatForMode(mode);
   if (!pat) return;
 
-  const authStorage = AuthStorage.create();
-  if (authStorage.get(providerID)) return;
+  if (getCachedCredentials("", providerID)) return;
 
   const credentials = await credentialsFromPat(pat, mode);
-  authStorage.set(providerID, { type: "oauth", ...credentials });
+
+  if (typeof AuthStorage !== "undefined" && typeof AuthStorage?.create === "function") {
+    try {
+      const authStorage = AuthStorage.create();
+      authStorage.set(providerID, { type: "oauth", ...credentials });
+    } catch {
+      saveCredentialsToAuthFile(providerID, credentials);
+    }
+  } else {
+    saveCredentialsToAuthFile(providerID, credentials);
+  }
+
   const qCreds = credentials as QoderCredentials;
   updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode).catch(() => {});
 }
@@ -52,7 +81,7 @@ export function getCachedCredentials(_accessToken: string, providerID = "qoder")
     try {
       const auth = JSON.parse(readFileSync(AUTH_FILE, "utf-8"));
       const creds = auth?.[providerID] || (providerID === "qoder" ? auth?.qoder : null);
-      if (creds?.userID) {
+      if (creds?.userID || creds?.access) {
         return creds as QoderCredentials;
       }
     } catch {}
