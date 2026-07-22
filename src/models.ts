@@ -345,6 +345,11 @@ export function getCachedModels(mode?: string): QoderModelDef[] {
     try {
       const data = JSON.parse(readFileSync(cachePath, "utf8"));
       if (data && Array.isArray(data.models)) {
+        // Older releases injected `auto` without a corresponding service config.
+        // Keep an explicitly enabled service model, but drop the legacy fallback.
+        if (data.configs && typeof data.configs === "object" && !data.configs.auto) {
+          return data.models.filter((model: QoderModelDef) => model.id !== "auto");
+        }
         return data.models;
       }
     } catch {}
@@ -503,23 +508,6 @@ export async function updateQoderModelsCache(
     }
 
     if (newModels.length === 0) return;
-
-    // Ensure auto is present
-    if (!newModels.some((m) => m.id === "auto")) {
-      newModels.unshift({
-        id: "auto",
-        name: isQoderCNMode(mode) ? "Auto · Qoder CN" : "Qoder Auto",
-        api: "qoder-api",
-        provider: isQoderCNMode(mode) ? "qoder-cn" : "qoder",
-        baseUrl: getQoderBaseUrl(mode),
-        reasoning: true,
-        supportsEffort: false,
-        input: ["text", "image"],
-        cost: ZERO_COST,
-        contextWindow: 180000,
-        maxTokens: 32768,
-      });
-    }
 
     const cacheData = {
       updatedAt: Date.now(),
