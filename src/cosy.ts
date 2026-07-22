@@ -10,11 +10,20 @@ MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDA8iMH5c02LilrsERw9t6Pv5Nc
 XcW+ML9FoCI6AOvOzwIDAQAB
 -----END PUBLIC KEY-----`;
 
-const QoderIDEVersion = "1.0.0";
+// Keep the COSY client identity aligned with the current Qoder CLI catalog
+// protocol. Older values cause the model endpoint to return a reduced list.
+const QoderIDEVersion = "1.1.3";
 const QoderClientType = "5";
 const QoderDataPolicy = "disagree";
 const QoderLoginVersion = "v2";
-const QoderMachineOS = "x86_64_windows";
+const QoderMachineOS =
+  process.platform === "win32"
+    ? process.arch === "arm64"
+      ? "aarch64_windows"
+      : "x86_64_windows"
+    : process.arch === "arm64"
+      ? "aarch64_linux"
+      : "x86_64_linux";
 const QoderMachineTypeMagic = "5";
 
 const QoderModeEnv = process.env.QODER_REGION || process.env.QODER_BACKEND || process.env.QODER_MODE || "";
@@ -79,7 +88,9 @@ export function getQoderCenterUrl(mode?: string): string {
 }
 
 export function getQoderModelListURL(mode?: string): string {
-  return `${getQoderBaseUrl(mode)}algo/api/v2/model/list`;
+  // The CLI uses Encode=1 for the model catalog. Without it, the service
+  // returns a reduced catalog and omits models such as Cantus/cmodel.
+  return `${getQoderBaseUrl(mode)}algo/api/v2/model/list?Encode=1`;
 }
 
 export function getQoderChatURL(mode?: string): string {

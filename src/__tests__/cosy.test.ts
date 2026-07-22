@@ -91,11 +91,11 @@ describe("getQoderCenterUrl", () => {
 
 describe("getQoderModelListURL", () => {
   it("constructs correct CN URL", () => {
-    expect(getQoderModelListURL("cn")).toBe("https://gateway.qoder.com.cn/algo/api/v2/model/list");
+    expect(getQoderModelListURL("cn")).toBe("https://gateway.qoder.com.cn/algo/api/v2/model/list?Encode=1");
   });
 
   it("constructs correct global URL", () => {
-    expect(getQoderModelListURL("global")).toBe("https://api3.qoder.sh/algo/api/v2/model/list");
+    expect(getQoderModelListURL("global")).toBe("https://api3.qoder.sh/algo/api/v2/model/list?Encode=1");
   });
 });
 

@@ -43,6 +43,21 @@ describe("Qoder model cache", () => {
     expect(cache.models.some((model: { id: string }) => model.id === "auto")).toBe(false);
   });
 
+  it("keeps the Cantus model returned by the current catalog", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ chat: [{ key: "cmodel", enable: true, display_name: "Cantus" }] }),
+      }),
+    );
+
+    await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
+
+    const cache = JSON.parse(readFileSync(CACHE_PATH, "utf8"));
+    expect(cache.models.map((model: { id: string }) => model.id)).toEqual(["cmodel"]);
+  });
+
   it("filters auto from a legacy fallback cache when the service did not enable it", () => {
     writeFileSync(
       CACHE_PATH,
