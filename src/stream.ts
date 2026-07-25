@@ -153,7 +153,12 @@ export function streamQoder(
         }
       }
 
-      const sessionID = stableHash("qoder-session", userID, qoderModel);
+      // Each request gets a fresh server-side session id. Reusing a stable
+      // session id across back-to-back agentic requests triggers Qoder's
+      // per-session lock and the server replies `406 Session blocked` mid
+      // stream. We send full conversation history on every request, so a unique
+      // session id is safe and avoids the lock entirely.
+      const sessionID = `${stableHash("qoder-session", userID, qoderModel)}-${crypto.randomUUID()}`;
 
       let maxTokens = 32768;
       if (maxOutputTokens > 0) {
@@ -294,6 +299,22 @@ export function streamQoder(
             if (!innerStr || innerStr === "[DONE]") continue;
 
             const inner = JSON.parse(innerStr);
+            if (inner.id) output.responseId = inner.id as string;
+            if (inner.model) output.responseModel = inner.model as string;
+            if (inner.usage) {
+              const u = inner.usage as {
+                prompt_tokens?: number;
+                completion_tokens?: number;
+                total_tokens?: number;
+                completion_tokens_details?: { reasoning_tokens?: number };
+                prompt_tokens_details?: { cacheable_tokens?: number; cached_tokens?: number };
+              };
+              output.usage.input = u.prompt_tokens ?? 0;
+              output.usage.output = u.completion_tokens ?? 0;
+              output.usage.totalTokens = u.total_tokens ?? 0;
+              output.usage.cacheRead = u.prompt_tokens_details?.cached_tokens ?? 0;
+              output.usage.cacheWrite = u.prompt_tokens_details?.cacheable_tokens ?? 0;
+            }
             if (inner.choices && inner.choices.length > 0) {
               const choice = inner.choices[0];
               const delta = choice.delta;
@@ -382,10 +403,23 @@ export function streamQoder(
               }
 
               if (choice.finish_reason) {
-                output.stopReason = choice.finish_reason;
+                // Preserve the real upstream finish_reason (e.g. "length",
+                // "content_filter") instead of forcing "stop" later.
+                output.stopReason = choice.finish_reason as AssistantMessage["stopReason"];
               }
             }
-          } catch {}
+          } catch (e) {
+            // A single malformed SSE line shouldn't kill the stream — skip it.
+            // But a genuine upstream error (thrown below) must propagate to the
+            // outer catch and surface as stopReason="error", not be swallowed.
+            if (e instanceof SyntaxError) {
+              if (process.env.QODER_DEBUG) {
+                console.error("[pi-provider-qoder] skipping malformed SSE line:", dataStr.slice(0, 200));
+              }
+              continue;
+            }
+            throw e;
+          }
         }
       }
 
@@ -428,10 +462,15 @@ export function streamQoder(
 
       if (toolCallsState.length > 0) {
         output.stopReason = "toolUse";
-      } else {
-        output.stopReason = "stop";
       }
-      stream.push({ type: "done", reason: output.stopReason as "stop" | "toolUse", message: output });
+      // Otherwise keep whatever finish_reason set upstream (defaults to "stop").
+      // Never overwrite a meaningful finish_reason ("length", "content_filter",
+      // ...) with "stop".
+      stream.push({
+        type: "done",
+        reason: output.stopReason as Extract<AssistantMessage["stopReason"], "stop" | "length" | "toolUse">,
+        message: output,
+      });
       stream.end();
     } catch (e: unknown) {
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
