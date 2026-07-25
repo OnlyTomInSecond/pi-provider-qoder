@@ -189,8 +189,13 @@ export function streamQoder(
         chat_prompt: "",
         image_urls: null,
         aliyun_user_type: "",
-        system: systemText,
-        messages: normalizedMessages,
+        // Qoder's server ignores the top-level `system` field (verified: the
+        // model never sees it). Inject the system prompt as a leading
+        // role:system message instead, which the server does honor.
+        system: "",
+        messages: systemText
+          ? [{ role: "system", content: systemText }, ...normalizedMessages]
+          : normalizedMessages,
         tools: toolsRaw || [],
         parameters: { max_tokens: maxTokens },
         chat_context: {

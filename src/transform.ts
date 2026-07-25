@@ -32,7 +32,7 @@ type QoderContent = string | Array<QoderTextPart | QoderImagePart>;
 
 /** OpenAI-style message sent to the Qoder API. */
 interface QoderMessage {
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "tool" | "system";
   content: QoderContent | null;
   tool_calls?: QoderToolCall[];
   tool_call_id?: string;
