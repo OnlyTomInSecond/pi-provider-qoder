@@ -193,9 +193,7 @@ export function streamQoder(
         // model never sees it). Inject the system prompt as a leading
         // role:system message instead, which the server does honor.
         system: "",
-        messages: systemText
-          ? [{ role: "system", content: systemText }, ...normalizedMessages]
-          : normalizedMessages,
+        messages: systemText ? [{ role: "system", content: systemText }, ...normalizedMessages] : normalizedMessages,
         tools: toolsRaw || [],
         parameters: { max_tokens: maxTokens },
         chat_context: {

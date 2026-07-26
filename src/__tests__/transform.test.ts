@@ -222,7 +222,11 @@ describe("transformMessagesForQoder", () => {
     });
   });
 
-  it("sets content to null for assistant messages with empty content", () => {
+  it("uses a placeholder content for assistant messages with only tool calls (gateway workaround)", () => {
+    // Regression: Qoder's gateway drops assistant messages with content:null,
+    // which orphans the following tool_result and causes dmodel/ultimate to
+    // reject the request with provider_error 400. Content must be non-null
+    // whenever tool_calls are present.
     const msgs = [
       {
         role: "assistant",
@@ -238,7 +242,42 @@ describe("transformMessagesForQoder", () => {
     ] as unknown as Message[];
     const result = transformMessagesForQoder(msgs);
     const msg0 = result[0] as { role: string; content: unknown; tool_calls?: unknown[] };
-    expect(msg0.content).toBeNull();
+    expect(msg0.content).not.toBeNull();
+    expect(typeof msg0.content).toBe("string");
     expect(msg0.tool_calls).toHaveLength(1);
+  });
+
+  it("preserves tool_call_id pairing across assistant+toolResult when assistant has only tool calls", () => {
+    // End-to-end regression: a toolCall-only assistant followed by a toolResult
+    // must produce a valid OpenAI message sequence that upstreams accept.
+    const msgs = [
+      { role: "user", content: "do it" },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_abc123", name: "bash", arguments: { command: "ls" } }],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_abc123",
+        content: "file1\nfile2",
+      },
+    ] as unknown as Message[];
+    const result = transformMessagesForQoder(msgs);
+
+    const asst = result[1] as {
+      role: string;
+      content: unknown;
+      tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+    };
+    const tool = result[2] as { role: string; tool_call_id: string; content: string };
+
+    // Assistant must keep the message (non-null content) so the tool pairs up.
+    expect(asst.content).not.toBeNull();
+    expect(asst.tool_calls).toHaveLength(1);
+    expect(asst.tool_calls?.[0].id).toBe("call_abc123");
+
+    // Tool result must reference the assistant's tool_call id.
+    expect(tool.role).toBe("tool");
+    expect(tool.tool_call_id).toBe("call_abc123");
   });
 });
