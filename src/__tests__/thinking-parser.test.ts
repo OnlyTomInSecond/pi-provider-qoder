@@ -1,6 +1,6 @@
 import type { Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ThinkingTagParser } from "../thinking-parser.js";
+import { stripThinkingTags, ThinkingTagParser } from "../thinking-parser.js";
 
 function createMockStream() {
   const events: AssistantMessageEvent[] = [];
@@ -239,5 +239,69 @@ describe("ThinkingTagParser", () => {
 
     expect(output.content).toHaveLength(1);
     expect(output.content[0]).toMatchObject({ type: "thinking", thinking: "unfinished" });
+  });
+
+  // ── Orphan closing tags (opener arrived via reasoning_content) ─────────
+  // Regression: Qoder's backend splits one `<thinking>...</thinking>` pair
+  // across two SSE fields — opener+reasoning into `reasoning_content`, closer
+  // +answer into `content`. The closer has no opener in the content stream, so
+  // it must be dropped instead of leaking into visible text.
+
+  it("drops an orphan closing tag at the start of content", () => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk("</thinking>\n\n让我查一下这个选项");
+    parser.finalize();
+
+    const textBlocks = output.content.filter((c) => c.type === "text");
+    expect(textBlocks).toHaveLength(1);
+    const text = (textBlocks[0] as { type: string; text: string }).text;
+    expect(text).toBe("让我查一下这个选项");
+    expect(text).not.toContain("</thinking>");
+    expect(output.content.some((c) => c.type === "thinking")).toBe(false);
+  });
+
+  it("drops an orphan closer split across stream chunks", () => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk("</think");
+    parser.processChunk("ing>\n\nanswer");
+    parser.finalize();
+
+    const textBlocks = output.content.filter((c) => c.type === "text");
+    expect(textBlocks).toHaveLength(1);
+    const text = (textBlocks[0] as { type: string; text: string }).text;
+    expect(text).toBe("answer");
+    expect(text).not.toContain("</thinking>");
+    expect(text).not.toContain("</think");
+  });
+
+  it("drops an orphan closer for the <reasoning> variant too", () => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk("</reasoning>\n\nresult");
+    parser.finalize();
+
+    const text = (output.content.find((c) => c.type === "text") as { type: string; text: string })?.text ?? "";
+    expect(text).toBe("result");
+    expect(text).not.toContain("</reasoning>");
+  });
+
+  it("emits text before an orphan closer, then drops the closer", () => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk("intro</thinking>\n\noutro");
+    parser.finalize();
+
+    const text = (output.content.find((c) => c.type === "text") as { type: string; text: string })?.text ?? "";
+    expect(text).not.toContain("</thinking>");
+    expect(text).toContain("intro");
+    expect(text).toContain("outro");
+  });
+
+  // ── stripThinkingTags helper ───────────────────────────────────────────
+
+  it("stripThinkingTags removes opening and closing tag variants", () => {
+    expect(stripThinkingTags("<thinking>hello</thinking>")).toBe("hello");
+    expect(stripThinkingTags("<reasoning>deep</reasoning>")).toBe("deep");
+    expect(stripThinkingTags("plain text")).toBe("plain text");
+    expect(stripThinkingTags("<thinking>")).toBe("");
+    expect(stripThinkingTags("</thinking>")).toBe("");
   });
 });

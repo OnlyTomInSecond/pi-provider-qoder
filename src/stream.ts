@@ -23,7 +23,7 @@ import {
 import { getCachedModelConfig } from "./models.js";
 import { getCachedCredentials } from "./oauth.js";
 import { qoderEncodeBody } from "./qoder-encoding.js";
-import { ThinkingTagParser } from "./thinking-parser.js";
+import { stripThinkingTags, ThinkingTagParser } from "./thinking-parser.js";
 import { transformMessagesForQoder, transformTools } from "./transform.js";
 
 interface ToolCallState {
@@ -326,19 +326,27 @@ export function streamQoder(
               if (delta) {
                 // 1. Process reasoning/thinking content (API reasoning)
                 if (delta.reasoning_content) {
-                  if (thinkingBlockIndex === -1) {
-                    thinkingBlockIndex = output.content.length;
-                    output.content.push({ type: "thinking", thinking: "" });
-                    stream.push({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
+                  // Qoder's backend sometimes routes a literal `<thinking>`
+                  // opener into reasoning_content (with the matching
+                  // `</thinking>` closer landing in the content stream). Strip
+                  // tag artifacts so the thinking block stays clean, matching
+                  // the SDK's ContentBlock model.
+                  const reasoningChunk = stripThinkingTags(delta.reasoning_content);
+                  if (reasoningChunk) {
+                    if (thinkingBlockIndex === -1) {
+                      thinkingBlockIndex = output.content.length;
+                      output.content.push({ type: "thinking", thinking: "" });
+                      stream.push({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
+                    }
+                    const block = output.content[thinkingBlockIndex] as ThinkingContent;
+                    block.thinking += reasoningChunk;
+                    stream.push({
+                      type: "thinking_delta",
+                      contentIndex: thinkingBlockIndex,
+                      delta: reasoningChunk,
+                      partial: output,
+                    });
                   }
-                  const block = output.content[thinkingBlockIndex] as ThinkingContent;
-                  block.thinking += delta.reasoning_content;
-                  stream.push({
-                    type: "thinking_delta",
-                    contentIndex: thinkingBlockIndex,
-                    delta: delta.reasoning_content,
-                    partial: output,
-                  });
                 }
 
                 // 2. Process text content
