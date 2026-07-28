@@ -153,12 +153,13 @@ export function streamQoder(
         }
       }
 
-      // Each request gets a fresh server-side session id. Reusing a stable
-      // session id across back-to-back agentic requests triggers Qoder's
-      // per-session lock and the server replies `406 Session blocked` mid
-      // stream. We send full conversation history on every request, so a unique
-      // session id is safe and avoids the lock entirely.
-      const sessionID = `${stableHash("qoder-session", userID, qoderModel)}-${crypto.randomUUID()}`;
+      // Use a stable session id when pi provides one (per agent session) so
+      // the Qoder server can maintain prompt cache affinity across consecutive
+      // requests. Fall back to a random id only when no sessionId is available.
+      const stablePart = stableHash("qoder-session", userID, qoderModel);
+      const sessionID = options?.sessionId
+        ? `${stablePart}-${options.sessionId}`
+        : `${stablePart}-${crypto.randomUUID()}`;
 
       let maxTokens = 32768;
       if (maxOutputTokens > 0) {
