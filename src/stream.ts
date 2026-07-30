@@ -23,7 +23,7 @@ import {
 import { getCachedModelConfig } from "./models.js";
 import { getCachedCredentials } from "./oauth.js";
 import { qoderEncodeBody } from "./qoder-encoding.js";
-import { ThinkingTagParser } from "./thinking-parser.js";
+import { stripThinkingTags, ThinkingTagParser } from "./thinking-parser.js";
 import { transformMessagesForQoder, transformTools } from "./transform.js";
 
 interface ToolCallState {
@@ -153,7 +153,13 @@ export function streamQoder(
         }
       }
 
-      const sessionID = stableHash("qoder-session", userID, qoderModel);
+      // Use a stable session id when pi provides one (per agent session) so
+      // the Qoder server can maintain prompt cache affinity across consecutive
+      // requests. Fall back to a random id only when no sessionId is available.
+      const stablePart = stableHash("qoder-session", userID, qoderModel);
+      const sessionID = options?.sessionId
+        ? `${stablePart}-${options.sessionId}`
+        : `${stablePart}-${crypto.randomUUID()}`;
 
       let maxTokens = 32768;
       if (maxOutputTokens > 0) {
@@ -184,8 +190,11 @@ export function streamQoder(
         chat_prompt: "",
         image_urls: null,
         aliyun_user_type: "",
-        system: systemText,
-        messages: normalizedMessages,
+        // Qoder's server ignores the top-level `system` field (verified: the
+        // model never sees it). Inject the system prompt as a leading
+        // role:system message instead, which the server does honor.
+        system: "",
+        messages: systemText ? [{ role: "system", content: systemText }, ...normalizedMessages] : normalizedMessages,
         tools: toolsRaw || [],
         parameters: { max_tokens: maxTokens },
         chat_context: {
@@ -294,6 +303,37 @@ export function streamQoder(
             if (!innerStr || innerStr === "[DONE]") continue;
 
             const inner = JSON.parse(innerStr);
+            if (inner.id) output.responseId = inner.id as string;
+            if (inner.model) output.responseModel = inner.model as string;
+            if (inner.usage) {
+              const u = inner.usage as {
+                prompt_tokens?: number;
+                completion_tokens?: number;
+                total_tokens?: number;
+                completion_tokens_details?: { reasoning_tokens?: number };
+                prompt_tokens_details?: {
+                  cacheable_tokens?: number;
+                  cached_tokens?: number;
+                  cache_write_tokens?: number;
+                };
+              };
+              // pi-core computes `promptTokens = input + cacheRead + cacheWrite`
+              // (Anthropic convention: `input` EXCLUDES cached/written tokens).
+              // Qoder follows OpenAI semantics where `prompt_tokens` INCLUDES
+              // `cached_tokens`, so subtract cacheRead (and cache_write_tokens
+              // when reported) to match the contract pi-ai's own OpenAI
+              // provider uses. `cacheable_tokens` is a capacity metric, not a
+              // write count (it is 0 even on first-turn writes), so it is NOT
+              // mapped to cacheWrite.
+              const promptTokens = u.prompt_tokens ?? 0;
+              const cacheReadTokens = u.prompt_tokens_details?.cached_tokens ?? 0;
+              const cacheWriteTokens = u.prompt_tokens_details?.cache_write_tokens ?? 0;
+              output.usage.input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
+              output.usage.output = u.completion_tokens ?? 0;
+              output.usage.totalTokens = u.total_tokens ?? 0;
+              output.usage.cacheRead = cacheReadTokens;
+              output.usage.cacheWrite = cacheWriteTokens;
+            }
             if (inner.choices && inner.choices.length > 0) {
               const choice = inner.choices[0];
               const delta = choice.delta;
@@ -301,19 +341,27 @@ export function streamQoder(
               if (delta) {
                 // 1. Process reasoning/thinking content (API reasoning)
                 if (delta.reasoning_content) {
-                  if (thinkingBlockIndex === -1) {
-                    thinkingBlockIndex = output.content.length;
-                    output.content.push({ type: "thinking", thinking: "" });
-                    stream.push({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
+                  // Qoder's backend sometimes routes a literal `<thinking>`
+                  // opener into reasoning_content (with the matching
+                  // `</thinking>` closer landing in the content stream). Strip
+                  // tag artifacts so the thinking block stays clean, matching
+                  // the SDK's ContentBlock model.
+                  const reasoningChunk = stripThinkingTags(delta.reasoning_content);
+                  if (reasoningChunk) {
+                    if (thinkingBlockIndex === -1) {
+                      thinkingBlockIndex = output.content.length;
+                      output.content.push({ type: "thinking", thinking: "" });
+                      stream.push({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
+                    }
+                    const block = output.content[thinkingBlockIndex] as ThinkingContent;
+                    block.thinking += reasoningChunk;
+                    stream.push({
+                      type: "thinking_delta",
+                      contentIndex: thinkingBlockIndex,
+                      delta: reasoningChunk,
+                      partial: output,
+                    });
                   }
-                  const block = output.content[thinkingBlockIndex] as ThinkingContent;
-                  block.thinking += delta.reasoning_content;
-                  stream.push({
-                    type: "thinking_delta",
-                    contentIndex: thinkingBlockIndex,
-                    delta: delta.reasoning_content,
-                    partial: output,
-                  });
                 }
 
                 // 2. Process text content
@@ -382,10 +430,23 @@ export function streamQoder(
               }
 
               if (choice.finish_reason) {
-                output.stopReason = choice.finish_reason;
+                // Preserve the real upstream finish_reason (e.g. "length",
+                // "content_filter") instead of forcing "stop" later.
+                output.stopReason = choice.finish_reason as AssistantMessage["stopReason"];
               }
             }
-          } catch {}
+          } catch (e) {
+            // A single malformed SSE line shouldn't kill the stream — skip it.
+            // But a genuine upstream error (thrown below) must propagate to the
+            // outer catch and surface as stopReason="error", not be swallowed.
+            if (e instanceof SyntaxError) {
+              if (process.env.QODER_DEBUG) {
+                console.error("[pi-provider-qoder] skipping malformed SSE line:", dataStr.slice(0, 200));
+              }
+              continue;
+            }
+            throw e;
+          }
         }
       }
 
@@ -428,10 +489,15 @@ export function streamQoder(
 
       if (toolCallsState.length > 0) {
         output.stopReason = "toolUse";
-      } else {
-        output.stopReason = "stop";
       }
-      stream.push({ type: "done", reason: output.stopReason as "stop" | "toolUse", message: output });
+      // Otherwise keep whatever finish_reason set upstream (defaults to "stop").
+      // Never overwrite a meaningful finish_reason ("length", "content_filter",
+      // ...) with "stop".
+      stream.push({
+        type: "done",
+        reason: output.stopReason as Extract<AssistantMessage["stopReason"], "stop" | "length" | "toolUse">,
+        message: output,
+      });
       stream.end();
     } catch (e: unknown) {
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";

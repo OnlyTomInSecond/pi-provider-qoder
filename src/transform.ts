@@ -32,7 +32,7 @@ type QoderContent = string | Array<QoderTextPart | QoderImagePart>;
 
 /** OpenAI-style message sent to the Qoder API. */
 interface QoderMessage {
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "tool" | "system";
   content: QoderContent | null;
   tool_calls?: QoderToolCall[];
   tool_call_id?: string;
@@ -135,9 +135,14 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
         content = am.content || "";
       }
 
+      // Qoder's gateway drops assistant messages whose content is null, which
+      // orphans the following tool_result and makes dmodel/ultimate upstreams
+      // reject the request ("tool must follow a message with tool_calls").
+      // When an assistant turn has tool calls but no text/thinking, inject a
+      // single-space placeholder so the gateway keeps the message.
       const mapped: QoderMessage = {
         role: "assistant",
-        content: content || null,
+        content: content || (toolCalls.length > 0 ? " " : null),
       };
       if (toolCalls.length > 0) {
         mapped.tool_calls = toolCalls;

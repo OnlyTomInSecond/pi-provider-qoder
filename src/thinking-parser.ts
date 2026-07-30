@@ -5,7 +5,7 @@ import type {
   ThinkingContent,
 } from "@earendil-works/pi-ai";
 
-const THINKING_TAG_VARIANTS: Array<{ open: string; close: string }> = [
+export const THINKING_TAG_VARIANTS: Array<{ open: string; close: string }> = [
   { open: "<thinking>", close: "</thinking>" },
   { open: "<think>", close: "</think>" },
   { open: "<reasoning>", close: "</reasoning>" },
@@ -26,6 +26,25 @@ function getMaxTrailingPossibleTagPrefixLength(text: string, tags: string[]): nu
     maxLength = Math.max(maxLength, getTrailingPossibleTagPrefixLength(text, tag));
   }
   return maxLength;
+}
+
+/**
+ * Remove every thinking/reasoning tag variant (open and close) from `text`.
+ *
+ * Qoder's backend sometimes routes a literal `<thinking>` opener into the
+ * `reasoning_content` channel (and the matching `</thinking>` closer into the
+ * `content` channel). Stripping these artifacts keeps the thinking block clean,
+ * matching the SDK's `ContentBlock` model. Best-effort per chunk: a tag split
+ * across stream deltas is not caught here (the ThinkingTagParser handles the
+ * content-channel side with cross-delta buffering).
+ */
+export function stripThinkingTags(text: string): string {
+  let out = text;
+  for (const { open, close } of THINKING_TAG_VARIANTS) {
+    if (open.length > 0 && out.includes(open)) out = out.split(open).join("");
+    if (close.length > 0 && out.includes(close)) out = out.split(close).join("");
+  }
+  return out;
 }
 
 export class ThinkingTagParser {
@@ -90,27 +109,53 @@ export class ThinkingTagParser {
   }
 
   private processBeforeThinking(): void {
-    let bestPos = -1;
-    let bestVariant: (typeof THINKING_TAG_VARIANTS)[number] | null = null;
+    // Find the first opener and first closer in the buffer.
+    let bestOpenPos = -1;
+    let bestOpenVariant: (typeof THINKING_TAG_VARIANTS)[number] | null = null;
+    let bestClosePos = -1;
+    let bestCloseVariant: (typeof THINKING_TAG_VARIANTS)[number] | null = null;
     for (const variant of THINKING_TAG_VARIANTS) {
-      const pos = this.textBuffer.indexOf(variant.open);
-      if (pos !== -1 && (bestPos === -1 || pos < bestPos)) {
-        bestPos = pos;
-        bestVariant = variant;
+      const openPos = this.textBuffer.indexOf(variant.open);
+      if (openPos !== -1 && (bestOpenPos === -1 || openPos < bestOpenPos)) {
+        bestOpenPos = openPos;
+        bestOpenVariant = variant;
+      }
+      const closePos = this.textBuffer.indexOf(variant.close);
+      if (closePos !== -1 && (bestClosePos === -1 || closePos < bestClosePos)) {
+        bestClosePos = closePos;
+        bestCloseVariant = variant;
       }
     }
-    if (bestPos !== -1 && bestVariant) {
-      if (bestPos > 0) this.emitText(this.textBuffer.slice(0, bestPos));
-      this.textBuffer = this.textBuffer.slice(bestPos + bestVariant.open.length);
-      this.activeEndTag = bestVariant.close;
+
+    // Opener comes first (or is the only tag): a real thinking block carried
+    // in the content stream. Enter thinking mode; processInsideThinking will
+    // handle its closer.
+    if (bestOpenVariant !== null && (bestCloseVariant === null || bestOpenPos < bestClosePos)) {
+      if (bestOpenPos > 0) this.emitText(this.textBuffer.slice(0, bestOpenPos));
+      this.textBuffer = this.textBuffer.slice(bestOpenPos + bestOpenVariant.open.length);
+      this.activeEndTag = bestOpenVariant.close;
       this.inThinking = true;
       return;
     }
 
-    const trailingPrefixLength = getMaxTrailingPossibleTagPrefixLength(
-      this.textBuffer,
-      THINKING_TAG_VARIANTS.map((variant) => variant.open),
-    );
+    // Closer with no preceding opener: an orphan close tag. Its matching
+    // opener was delivered via the separate `reasoning_content` channel (see
+    // stream.ts), so there is no thinking block to close here. Drop it — and
+    // the separator whitespace the model emits right after `</thinking>` — so
+    // it does not leak into visible text.
+    if (bestCloseVariant !== null) {
+      if (bestClosePos > 0) this.emitText(this.textBuffer.slice(0, bestClosePos));
+      this.textBuffer = this.textBuffer.slice(bestClosePos + bestCloseVariant.close.length);
+      if (this.textBuffer.startsWith("\n\n")) this.textBuffer = this.textBuffer.slice(2);
+      else if (this.textBuffer.startsWith("\n")) this.textBuffer = this.textBuffer.slice(1);
+      return;
+    }
+
+    // No complete tag yet. Hold back any trailing prefix that could be the
+    // start of an opener OR a closer, so a tag split across stream deltas is
+    // not partially emitted as text.
+    const allTags = THINKING_TAG_VARIANTS.flatMap((variant) => [variant.open, variant.close]);
+    const trailingPrefixLength = getMaxTrailingPossibleTagPrefixLength(this.textBuffer, allTags);
     const safeLen = this.textBuffer.length - trailingPrefixLength;
     if (safeLen > 0) {
       this.emitText(this.textBuffer.slice(0, safeLen));

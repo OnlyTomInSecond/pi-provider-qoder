@@ -1,7 +1,7 @@
 {
   "name": "pi-provider-qoder",
-  "version": "0.2.9",
-  "description": "Pi extension for Qoder AI — with OAuth authentication, COSY signatures and WAF bypass",
+  "version": "0.2.9-fix.1",
+  "description": "Pi extension for Qoder AI \u2014 with OAuth authentication, COSY signatures and WAF bypass",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
@@ -31,7 +31,7 @@
   },
   "pi": {
     "extensions": [
-      "./dist/index.js"
+      "./src/index.ts"
     ]
   },
   "devDependencies": {
