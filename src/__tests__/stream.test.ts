@@ -161,7 +161,12 @@ describe("streamQoder", () => {
             completion_tokens: 7,
             total_tokens: 49,
             completion_tokens_details: { reasoning_tokens: 3 },
-            prompt_tokens_details: { cacheable_tokens: 10, cached_tokens: 5 },
+            // prompt_tokens (42) INCLUDES cached_tokens (5) per OpenAI
+            // semantics; pi-core expects `input` to exclude them
+            // (promptTokens = input + cacheRead + cacheWrite), so input =
+            // 42 - 5 - 10 = 27. cacheable_tokens is a capacity metric, not a
+            // write count, and must not be mapped to cacheWrite.
+            prompt_tokens_details: { cacheable_tokens: 99, cache_write_tokens: 10, cached_tokens: 5 },
           },
         }),
       ) +
@@ -174,7 +179,7 @@ describe("streamQoder", () => {
     const msg = (done as { message: AssistantMessage }).message;
     expect(msg.responseId).toBe("chatcmpl-abc123");
     expect(msg.responseModel).toBe("qmodel_latest");
-    expect(msg.usage.input).toBe(42);
+    expect(msg.usage.input).toBe(27);
     expect(msg.usage.output).toBe(7);
     expect(msg.usage.totalTokens).toBe(49);
     expect(msg.usage.cacheRead).toBe(5);
