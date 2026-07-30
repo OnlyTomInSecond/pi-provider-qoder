@@ -311,13 +311,28 @@ export function streamQoder(
                 completion_tokens?: number;
                 total_tokens?: number;
                 completion_tokens_details?: { reasoning_tokens?: number };
-                prompt_tokens_details?: { cacheable_tokens?: number; cached_tokens?: number };
+                prompt_tokens_details?: {
+                  cacheable_tokens?: number;
+                  cached_tokens?: number;
+                  cache_write_tokens?: number;
+                };
               };
-              output.usage.input = u.prompt_tokens ?? 0;
+              // pi-core computes `promptTokens = input + cacheRead + cacheWrite`
+              // (Anthropic convention: `input` EXCLUDES cached/written tokens).
+              // Qoder follows OpenAI semantics where `prompt_tokens` INCLUDES
+              // `cached_tokens`, so subtract cacheRead (and cache_write_tokens
+              // when reported) to match the contract pi-ai's own OpenAI
+              // provider uses. `cacheable_tokens` is a capacity metric, not a
+              // write count (it is 0 even on first-turn writes), so it is NOT
+              // mapped to cacheWrite.
+              const promptTokens = u.prompt_tokens ?? 0;
+              const cacheReadTokens = u.prompt_tokens_details?.cached_tokens ?? 0;
+              const cacheWriteTokens = u.prompt_tokens_details?.cache_write_tokens ?? 0;
+              output.usage.input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
               output.usage.output = u.completion_tokens ?? 0;
               output.usage.totalTokens = u.total_tokens ?? 0;
-              output.usage.cacheRead = u.prompt_tokens_details?.cached_tokens ?? 0;
-              output.usage.cacheWrite = u.prompt_tokens_details?.cacheable_tokens ?? 0;
+              output.usage.cacheRead = cacheReadTokens;
+              output.usage.cacheWrite = cacheWriteTokens;
             }
             if (inner.choices && inner.choices.length > 0) {
               const choice = inner.choices[0];
