@@ -407,17 +407,39 @@ export function streamQoder(
                     const state = toolCallsState[idx];
                     if (tc.id) state.id = tc.id;
                     if (tc.function?.name) state.name = tc.function.name;
+
+                    // Open the block as soon as the call is IDENTIFIABLE, not
+                    // when its first argument byte arrives. A call whose
+                    // arguments are absent or an empty string — a no-argument
+                    // tool, or a model that sends id+name and then stops — used
+                    // to create a toolCallsState entry and no content block, so
+                    // the finalizer below saw a non-empty state array, set
+                    // stopReason "toolUse", and handed back a message with no
+                    // tool call in it. The agent loop then had nothing to run
+                    // and the turn simply ended, mid-task and without an error.
+                    if (state.emittedStart === undefined && (state.id || state.name)) {
+                      state.emittedStart = true;
+                      state.contentIndex = output.content.length;
+                      output.content.push({
+                        type: "toolCall",
+                        id: state.id,
+                        name: state.name,
+                        arguments: {},
+                      } satisfies ToolCall);
+                      stream.push({ type: "toolcall_start", contentIndex: state.contentIndex, partial: output });
+                    }
+
+                    // id and name can arrive after the block is open; keep it
+                    // in step, since the finalizer only rewrites `arguments`.
+                    if (state.emittedStart) {
+                      const block = output.content[state.contentIndex] as ToolCall;
+                      block.id = state.id;
+                      block.name = state.name;
+                    }
+
                     if (tc.function?.arguments) {
                       const argDelta = tc.function.arguments;
                       state.arguments += argDelta;
-
-                      if (state.emittedStart === undefined) {
-                        state.emittedStart = true;
-                        state.contentIndex = output.content.length;
-                        const block: ToolCall = { type: "toolCall", id: state.id, name: state.name, arguments: {} };
-                        output.content.push(block);
-                        stream.push({ type: "toolcall_start", contentIndex: state.contentIndex, partial: output });
-                      }
                       stream.push({
                         type: "toolcall_delta",
                         contentIndex: state.contentIndex,
@@ -487,7 +509,10 @@ export function streamQoder(
         }
       }
 
-      if (toolCallsState.length > 0) {
+      // Guarded on blocks that actually reached the message, not on the state
+      // array being non-empty. Claiming "toolUse" for a message carrying no
+      // tool call is what turned a malformed stream into a silent dead end.
+      if (toolCallsState.some((state) => state?.emittedStart)) {
         output.stopReason = "toolUse";
       }
       // Otherwise keep whatever finish_reason set upstream (defaults to "stop").

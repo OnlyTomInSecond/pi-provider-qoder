@@ -52,6 +52,12 @@ export function getContentText(msg: Message): string {
   return "";
 }
 
+/** The image blocks of a message, in order. Empty when there are none. */
+export function getContentImages(msg: Message): ImageContent[] {
+  if (!Array.isArray(msg.content)) return [];
+  return msg.content.filter((c): c is ImageContent => c.type === "image");
+}
+
 export function transformTools(tools: Tool[]): QoderTool[] {
   return tools.map((t) => ({
     type: "function",
@@ -155,6 +161,36 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
         tool_call_id: tr.toolCallId,
         content: getContentText(tr),
       });
+
+      // A tool result may carry images — pi's `read` tool returns a text note
+      // plus an `image` block for png/jpg/gif/webp/bmp, and screenshot tools do
+      // the same. getContentText() maps every non-text block to "", so those
+      // images were dropped silently: the TUI rendered the picture while the
+      // model received only "Read image file [image/png]" and reported that it
+      // could not see images.
+      //
+      // The OpenAI-shaped `tool` role has nowhere to put them — its content is
+      // a plain string — so they follow as a separate user message, the same
+      // shape the user branch above already builds. The leading label keeps the
+      // model from reading a bare image as something the human just sent.
+      const images = getContentImages(tr);
+      if (images.length > 0) {
+        normalizedMessages.push({
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `[${images.length} image${images.length === 1 ? "" : "s"} returned by the previous tool call]`,
+            },
+            ...images.map(
+              (img): QoderImagePart => ({
+                type: "image_url",
+                image_url: { url: `data:${img.mimeType};base64,${img.data}` },
+              }),
+            ),
+          ],
+        });
+      }
     }
   }
 
