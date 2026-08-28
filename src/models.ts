@@ -260,9 +260,9 @@ export const staticCnModels: QoderModelDef[] = [
     supportsEffort: false,
     input: ["text", "image"],
     cost: ZERO_COST,
-    contextWindow: 180000,
+    contextWindow: 200000,
     maxTokens: 32768,
-    description: "Qoder CN smart routing; live catalog reports 180K max input.",
+    description: "Qoder CN smart routing; fallback context window of 200K.",
   },
   {
     id: "Qwen3.7-Max",
@@ -497,13 +497,17 @@ export async function updateQoderModelsCache(
       if (!key || !entry.enable) continue;
 
       const display = entry.display_name || key;
-      let ctxLen = entry.max_input_tokens || 180000;
+      // The context window is the largest selectable context option the upstream
+      // catalog exposes (e.g. 1M when 200K/400K/1M are offered). Fall back to
+      // 200K when no context_config is present. `max_input_tokens` is not used:
+      // it is a flat base value (180K) that every catalog entry with selectable
+      // contexts already exceeds, so it only ever acted as a redundant floor.
+      let ctxLen = 200000;
       if (entry.context_config && typeof entry.context_config === "object") {
         for (const configVal of Object.values(entry.context_config)) {
           if (configVal && typeof configVal === "object" && typeof configVal.token_count === "number") {
-            const tc = configVal.token_count;
-            if (tc > ctxLen) {
-              ctxLen = tc;
+            if (configVal.token_count > ctxLen) {
+              ctxLen = configVal.token_count;
             }
           }
         }
