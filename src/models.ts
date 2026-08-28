@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import {
   buildAuthHeaders,
   getQoderBaseUrl,
@@ -22,7 +23,10 @@ export interface QoderModelEntry {
   context_config?: Record<string, { token_count?: number; is_default?: boolean }>;
   is_vl?: boolean;
   is_reasoning?: boolean;
-  thinking_config?: { enabled?: { efforts?: unknown } };
+  thinking_config?: {
+    disabled?: unknown;
+    enabled?: { efforts?: Record<string, { is_default?: boolean }>; is_default?: boolean };
+  };
   source?: string;
   [key: string]: unknown;
 }
@@ -35,6 +39,7 @@ export interface QoderModelDef {
   baseUrl: string;
   reasoning: boolean;
   supportsEffort: boolean;
+  thinkingLevelMap?: ThinkingLevelMap;
   input: ("text" | "image")[];
   cost: typeof ZERO_COST;
   contextWindow: number;
@@ -378,6 +383,52 @@ export const staticCnModels: QoderModelDef[] = [
   },
 ];
 
+/** pi thinking levels in display order (matches the pi-ai SDK this build targets). */
+const PI_THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
+
+/**
+ * Map Qoder's `thinking_config` to pi's `thinkingLevelMap` so the TUI exposes
+ * the levels the upstream model actually supports.
+ *
+ * Qoder has two shapes:
+ *   - effort-based: `thinking_config.enabled.efforts = { low, medium, xhigh, ... }`
+ *     Each effort key is already a pi level name, so supported levels map to
+ *     themselves and the rest are pinned to null (hidden in the picker).
+ *     `xhigh`/`max` are only shown when the map carries them, otherwise the
+ *     picker tops out at `high`.
+ *   - toggle-based: `thinking_config.enabled` without `efforts` (only on/off).
+ *     Every pi level is exposed and maps to "enabled" so a user picking any
+ *     level turns thinking on; the exact effort sent upstream is decided at
+ *     request time.
+ * Returns undefined for models that do not support thinking, so pi falls back
+ * to `reasoning: false`-style behavior (only `off`).
+ */
+function buildThinkingLevelMap(entry: QoderModelEntry): ThinkingLevelMap | undefined {
+  const tc = entry.thinking_config;
+  if (!tc) return undefined;
+  const efforts = tc.enabled?.efforts;
+  if (efforts && typeof efforts === "object") {
+    const supported = new Set(Object.keys(efforts));
+    // `off` (disable thinking) is selectable when the catalog advertises a
+    // `disabled` option; otherwise pin it to null to hide it.
+    const map: ThinkingLevelMap = { off: tc.disabled ? "disabled" : null };
+    for (const level of PI_THINKING_LEVELS) {
+      map[level] = supported.has(level) ? level : null;
+    }
+    return map;
+  }
+  // toggle-only (enabled/disabled, no efforts) — expose every level as "on".
+  // `off` is selectable when the catalog advertises `disabled`.
+  if (tc.enabled) {
+    const map: ThinkingLevelMap = { off: tc.disabled ? "disabled" : null };
+    for (const level of PI_THINKING_LEVELS) {
+      map[level] = "enabled";
+    }
+    return map;
+  }
+  return undefined;
+}
+
 export function getCachedModels(mode?: string): QoderModelDef[] {
   const cachePath = getQoderCachePath(mode);
   if (existsSync(cachePath)) {
@@ -515,6 +566,7 @@ export async function updateQoderModelsCache(
       const isVL = !!entry.is_vl;
       const isReasoning = !!entry.is_reasoning || !!entry.thinking_config;
       const supportsEffort = !!entry.thinking_config?.enabled?.efforts;
+      const thinkingLevelMap = buildThinkingLevelMap(entry);
       // CN models expose the upstream display_name (whitespace-stripped) as the
       // pi-visible id; the original `key` is stored in `configs` and read back at
       // request time, so no key<->friendlyId mapping table is needed.
@@ -533,6 +585,7 @@ export async function updateQoderModelsCache(
         baseUrl: getQoderBaseUrl(mode),
         reasoning: isReasoning,
         supportsEffort,
+        thinkingLevelMap,
         input: isVL ? ["text", "image"] : ["text"],
         cost: ZERO_COST,
         contextWindow: ctxLen,
