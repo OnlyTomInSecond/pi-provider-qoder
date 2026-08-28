@@ -20,7 +20,7 @@ import {
   getQoderUserEmailFallback,
   isQoderCNMode,
 } from "./cosy.js";
-import { getCachedModelConfig } from "./models.js";
+import { getCachedModelConfig, MAX_OUTPUT_TOKENS } from "./models.js";
 import { getCachedCredentials } from "./oauth.js";
 import { qoderEncodeBody } from "./qoder-encoding.js";
 import { stripThinkingTags, ThinkingTagParser } from "./thinking-parser.js";
@@ -161,10 +161,12 @@ export function streamQoder(
         ? `${stablePart}-${options.sessionId}`
         : `${stablePart}-${crypto.randomUUID()}`;
 
-      // Qoder's catalog exposes no per-model output cap (no max_output_tokens),
-      // so we default to 32K (matches qodercli's 32e3 fallback) and let pi cap it
-      // lower when the caller sets options.maxTokens (e.g. compaction at 40K).
-      let maxTokens = 32768;
+      // Qoder's catalog exposes no per-model output cap, so we use the
+      // documented upstream ceiling (MAX_OUTPUT_TOKENS = 131072, see models.ts)
+      // and let pi cap it lower when the caller sets options.maxTokens (e.g.
+      // compaction at 40K). This avoids truncating reasoning chains / long
+      // generations that the 32K default would cut off.
+      let maxTokens = MAX_OUTPUT_TOKENS;
       if (options?.maxTokens && options.maxTokens < maxTokens) {
         maxTokens = options.maxTokens;
       }

@@ -13,6 +13,19 @@ import {
 
 export const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
+/**
+ * Maximum output tokens sent per request. Aliyun Model Studio (the upstream
+ * behind Qoder's CN catalog) documents Max Output Length = 131072 for every
+ * model we expose (qwen3.8-max/flash, qwen3.7-max/plus/flash), in both normal
+ * and thinking modes (thinking chain alone goes up to 262144). The Qoder
+ * /model/list catalog does not return a per-model output cap, so this single
+ * constant is the source of truth for both static models and request sending.
+ * qodercli ships a conservative 32e3 default and caps its UI at 65536; we use
+ * the documented upstream ceiling so reasoning chains and long generations
+ * are not truncated.
+ */
+export const MAX_OUTPUT_TOKENS = 131072;
+
 /** Shape of a single entry returned by the Qoder /model/list endpoint. */
 export interface QoderModelEntry {
   key?: string;
@@ -67,7 +80,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 180000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "ultimate",
@@ -80,7 +93,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "performance",
@@ -93,7 +106,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "efficient",
@@ -106,7 +119,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 180000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "lite",
@@ -119,7 +132,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text"],
     cost: ZERO_COST,
     contextWindow: 180000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "qmodel",
@@ -132,7 +145,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "cmodel",
@@ -145,7 +158,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "qmodel_preview",
@@ -158,7 +171,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "qmodel_latest",
@@ -171,7 +184,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "dmodel",
@@ -184,7 +197,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "dfmodel",
@@ -197,7 +210,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "gm51model",
@@ -210,7 +223,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "kmodel",
@@ -223,7 +236,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 256000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "kmodel_latest",
@@ -236,7 +249,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
   {
     id: "mmodel",
@@ -249,7 +262,7 @@ export const staticModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
   },
 ];
 
@@ -265,7 +278,7 @@ export const staticCnModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 200000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN smart routing; fallback context window of 200K.",
   },
   {
@@ -279,7 +292,7 @@ export const staticCnModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN qmodel_latest; context options 200K/400K/1M.",
   },
   {
@@ -293,7 +306,7 @@ export const staticCnModels: QoderModelDef[] = [
     input: ["text"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN qmodel; context options 200K/400K/1M.",
   },
   {
@@ -307,7 +320,7 @@ export const staticCnModels: QoderModelDef[] = [
     input: ["text"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN q36fmodel; context options 200K/400K/1M.",
   },
   {
@@ -321,7 +334,7 @@ export const staticCnModels: QoderModelDef[] = [
     input: ["text"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN dmodel; context options 200K/400K/1M.",
   },
   {
@@ -335,7 +348,7 @@ export const staticCnModels: QoderModelDef[] = [
     input: ["text"],
     cost: ZERO_COST,
     contextWindow: 1000000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN dfmodel; context options 200K/400K/1M.",
   },
   {
@@ -349,7 +362,7 @@ export const staticCnModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 200000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN gm51model; live catalog currently displays GLM-5.2 with 200K context.",
   },
   {
@@ -363,7 +376,7 @@ export const staticCnModels: QoderModelDef[] = [
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: 256000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN kmodel; context option 256K.",
   },
   {
@@ -377,7 +390,7 @@ export const staticCnModels: QoderModelDef[] = [
     input: ["text"],
     cost: ZERO_COST,
     contextWindow: 200000,
-    maxTokens: 32768,
+    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN mmodel; live catalog reports 200K context.",
   },
 ];
@@ -465,7 +478,6 @@ export function getCachedModelConfig(modelKey: string, mode?: string): QoderMode
     return {
       key: modelKey,
       is_reasoning: false,
-      max_output_tokens: 32768,
       source: "system",
     };
   }
@@ -588,7 +600,7 @@ export async function updateQoderModelsCache(
         input: isVL ? ["text", "image"] : ["text"],
         cost: ZERO_COST,
         contextWindow: ctxLen,
-        maxTokens: 32768,
+        maxTokens: MAX_OUTPUT_TOKENS,
       });
     }
 
