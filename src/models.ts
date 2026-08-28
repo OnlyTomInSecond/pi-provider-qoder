@@ -4,10 +4,10 @@ import { dirname, join } from "node:path";
 import {
   buildAuthHeaders,
   getQoderBaseUrl,
-  getQoderCNFriendlyModelInfo,
   getQoderMode,
   getQoderModelListURL,
   isQoderCNMode,
+  toQoderCNModelId,
 } from "./cosy.js";
 
 export const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
@@ -251,8 +251,8 @@ export const staticModels: QoderModelDef[] = [
 
 export const staticCnModels: QoderModelDef[] = [
   {
-    id: "auto",
-    name: "Auto · Qoder CN",
+    id: "Auto",
+    name: "Auto",
     api: "qoder-api",
     provider: "qoder-cn",
     baseUrl: getQoderBaseUrl("cn"),
@@ -265,8 +265,8 @@ export const staticCnModels: QoderModelDef[] = [
     description: "Qoder CN smart routing; live catalog reports 180K max input.",
   },
   {
-    id: "qwen3.7-max",
-    name: "Qwen 3.7 Max · Qoder CN",
+    id: "Qwen3.7-Max",
+    name: "Qwen3.7-Max",
     api: "qoder-api",
     provider: "qoder-cn",
     baseUrl: getQoderBaseUrl("cn"),
@@ -279,8 +279,8 @@ export const staticCnModels: QoderModelDef[] = [
     description: "Qoder CN qmodel_latest; context options 200K/400K/1M.",
   },
   {
-    id: "qwen3.7-plus",
-    name: "Qwen 3.7 Plus · Qoder CN",
+    id: "Qwen3.7-Plus",
+    name: "Qwen3.7-Plus",
     api: "qoder-api",
     provider: "qoder-cn",
     baseUrl: getQoderBaseUrl("cn"),
@@ -293,8 +293,8 @@ export const staticCnModels: QoderModelDef[] = [
     description: "Qoder CN qmodel; context options 200K/400K/1M.",
   },
   {
-    id: "qwen3.6-flash",
-    name: "Qwen 3.6 Flash · Qoder CN",
+    id: "Qwen3.6-Flash",
+    name: "Qwen3.6-Flash",
     api: "qoder-api",
     provider: "qoder-cn",
     baseUrl: getQoderBaseUrl("cn"),
@@ -307,8 +307,8 @@ export const staticCnModels: QoderModelDef[] = [
     description: "Qoder CN q36fmodel; context options 200K/400K/1M.",
   },
   {
-    id: "deepseek-v4-pro",
-    name: "DeepSeek V4 Pro · Qoder CN",
+    id: "DeepSeek-V4-Pro",
+    name: "DeepSeek-V4-Pro",
     api: "qoder-api",
     provider: "qoder-cn",
     baseUrl: getQoderBaseUrl("cn"),
@@ -321,8 +321,8 @@ export const staticCnModels: QoderModelDef[] = [
     description: "Qoder CN dmodel; context options 200K/400K/1M.",
   },
   {
-    id: "deepseek-v4-flash",
-    name: "DeepSeek V4 Flash · Qoder CN",
+    id: "DeepSeek-V4-Flash",
+    name: "DeepSeek-V4-Flash",
     api: "qoder-api",
     provider: "qoder-cn",
     baseUrl: getQoderBaseUrl("cn"),
@@ -335,8 +335,8 @@ export const staticCnModels: QoderModelDef[] = [
     description: "Qoder CN dfmodel; context options 200K/400K/1M.",
   },
   {
-    id: "glm-5.2",
-    name: "GLM 5.2 · Qoder CN",
+    id: "GLM-5.2",
+    name: "GLM-5.2",
     api: "qoder-api",
     provider: "qoder-cn",
     baseUrl: getQoderBaseUrl("cn"),
@@ -349,8 +349,8 @@ export const staticCnModels: QoderModelDef[] = [
     description: "Qoder CN gm51model; live catalog currently displays GLM-5.2 with 200K context.",
   },
   {
-    id: "kimi-k2.6",
-    name: "Kimi K2.6 · Qoder CN",
+    id: "Kimi-K2.7-Code",
+    name: "Kimi-K2.7-Code",
     api: "qoder-api",
     provider: "qoder-cn",
     baseUrl: getQoderBaseUrl("cn"),
@@ -363,8 +363,8 @@ export const staticCnModels: QoderModelDef[] = [
     description: "Qoder CN kmodel; context option 256K.",
   },
   {
-    id: "minimax-m2.7",
-    name: "MiniMax M2.7 · Qoder CN",
+    id: "MiniMax-M2.7",
+    name: "MiniMax-M2.7",
     api: "qoder-api",
     provider: "qoder-cn",
     baseUrl: getQoderBaseUrl("cn"),
@@ -407,29 +407,14 @@ export function getCachedModelConfig(modelKey: string, mode?: string): QoderMode
     } catch {}
   }
 
+  // No cached config. This only happens before the first successful catalog
+  // fetch (e.g. not yet logged in), in which case the request cannot succeed
+  // anyway. Return a minimal entry carrying the id as the key so callers have
+  // something to read; reasoning is unknown so default to false.
   if (isQoderCNMode(mode)) {
-    const reasoningModels = new Set([
-      "qoder-cn",
-      "auto",
-      "qmodel_latest",
-      "qmodel",
-      "q36fmodel",
-      "qfmodel",
-      "dmodel",
-      "gm51model",
-      "kmodel",
-      "qwen3.7-max",
-      "qwen3.7-plus",
-      "qwen3.6-plus",
-      "qwen3.6-flash",
-      "deepseek-v4-pro",
-      "glm-5.2",
-      "glm-5.1",
-      "kimi-k2.6",
-    ]);
     return {
       key: modelKey,
-      is_reasoning: reasoningModels.has(modelKey),
+      is_reasoning: false,
       max_output_tokens: 32768,
       source: "system",
     };
@@ -526,7 +511,12 @@ export async function updateQoderModelsCache(
       const isVL = !!entry.is_vl;
       const isReasoning = !!entry.is_reasoning || !!entry.thinking_config;
       const supportsEffort = !!entry.thinking_config?.enabled?.efforts;
-      const modelInfo = isQoderCNMode(mode) ? getQoderCNFriendlyModelInfo(key, display) : { id: key, name: display };
+      // CN models expose the upstream display_name (whitespace-stripped) as the
+      // pi-visible id; the original `key` is stored in `configs` and read back at
+      // request time, so no key<->friendlyId mapping table is needed.
+      const modelInfo = isQoderCNMode(mode)
+        ? { id: toQoderCNModelId(display), name: display }
+        : { id: key, name: display };
 
       configs[key] = entry;
       if (modelInfo.id !== key) configs[modelInfo.id] = entry;

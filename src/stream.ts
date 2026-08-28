@@ -15,7 +15,6 @@ import {
   buildAuthHeaders,
   getMachineId,
   getQoderChatURL,
-  getQoderCNDirectModel,
   getQoderMode,
   getQoderUserEmailFallback,
   isQoderCNMode,
@@ -120,18 +119,20 @@ export function streamQoder(
       const email = cachedCreds?.email || getQoderUserEmailFallback(providerMode);
       const machineID = cachedCreds?.machineID || getMachineId();
 
-      const qoderModel = isQoderCNMode(providerMode) ? getQoderCNDirectModel(model.id) : model.id;
-      const modelConfig = getCachedModelConfig(qoderModel, providerMode) || {
-        key: qoderModel,
-        is_reasoning:
-          qoderModel === "ultimate" ||
-          qoderModel === "performance" ||
-          qoderModel.includes("dmodel") ||
-          qoderModel.includes("dfmodel"),
+      // The model `id` pi exposes is the upstream display_name (whitespace
+      // stripped) for CN, or the raw key for the international site. The
+      // request-time upstream `key` is read back from the cached model config
+      // (which stores the original entry keyed by both `key` and `id`), so no
+      // key<->friendlyId mapping table is needed here.
+      const modelConfig = getCachedModelConfig(model.id, providerMode) || {
+        key: model.id,
+        is_reasoning: false,
         max_output_tokens: 32768,
         source: "system",
       };
-      modelConfig.key = qoderModel;
+      // Use the cached entry's original upstream key when available; fall back to
+      // the pi id (international site already uses the key as id).
+      const qoderModel = modelConfig.key || model.id;
 
       const isReasoning = !!modelConfig.is_reasoning;
       const maxOutputTokens = modelConfig.max_output_tokens || 32768;
