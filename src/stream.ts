@@ -128,7 +128,6 @@ export function streamQoder(
       const modelConfig = getCachedModelConfig(model.id, providerMode) || {
         key: model.id,
         is_reasoning: false,
-        max_output_tokens: 32768,
         source: "system",
       };
       // Use the cached entry's original upstream key when available; fall back to
@@ -136,7 +135,6 @@ export function streamQoder(
       const qoderModel = modelConfig.key || model.id;
 
       const isReasoning = !!modelConfig.is_reasoning;
-      const maxOutputTokens = modelConfig.max_output_tokens || 32768;
 
       const normalizedMessages = transformMessagesForQoder(context.messages);
       const systemText = context.systemPrompt || "";
@@ -163,10 +161,10 @@ export function streamQoder(
         ? `${stablePart}-${options.sessionId}`
         : `${stablePart}-${crypto.randomUUID()}`;
 
+      // Qoder's catalog exposes no per-model output cap (no max_output_tokens),
+      // so we default to 32K (matches qodercli's 32e3 fallback) and let pi cap it
+      // lower when the caller sets options.maxTokens (e.g. compaction at 40K).
       let maxTokens = 32768;
-      if (maxOutputTokens > 0) {
-        maxTokens = maxOutputTokens;
-      }
       if (options?.maxTokens && options.maxTokens < maxTokens) {
         maxTokens = options.maxTokens;
       }

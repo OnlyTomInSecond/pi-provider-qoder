@@ -19,7 +19,6 @@ export interface QoderModelEntry {
   enable?: boolean;
   display_name?: string;
   max_input_tokens?: number;
-  max_output_tokens?: number;
   context_config?: Record<string, { token_count?: number; is_default?: boolean }>;
   is_vl?: boolean;
   is_reasoning?: boolean;
@@ -589,7 +588,7 @@ export async function updateQoderModelsCache(
         input: isVL ? ["text", "image"] : ["text"],
         cost: ZERO_COST,
         contextWindow: ctxLen,
-        maxTokens: entry.max_output_tokens || 32768,
+        maxTokens: 32768,
       });
     }
 
