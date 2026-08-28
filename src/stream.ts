@@ -1,16 +1,17 @@
 import crypto from "node:crypto";
-import type {
-  Api,
-  AssistantMessage,
-  AssistantMessageEventStream,
-  Context,
-  Model,
-  SimpleStreamOptions,
-  TextContent,
-  ThinkingContent,
-  ToolCall,
-} from "@earendil-works/pi-ai";
 import * as PiAi from "@earendil-works/pi-ai";
+import {
+  type Api,
+  type AssistantMessage,
+  type AssistantMessageEventStream,
+  type Context,
+  clampThinkingLevel,
+  type Model,
+  type SimpleStreamOptions,
+  type TextContent,
+  type ThinkingContent,
+  type ToolCall,
+} from "@earendil-works/pi-ai";
 import {
   buildAuthHeaders,
   getMachineId,
@@ -173,6 +174,38 @@ export function streamQoder(
       const toolsRaw = context.tools && context.tools.length > 0 ? transformTools(context.tools) : undefined;
       const recordID = stableChatRecordID(qoderModel, normalizedMessages, toolsRaw, maxTokens);
 
+      // Map pi's thinking level (options.reasoning) to Qoder's request fields.
+      // Confirmed from @qoder-ai/qodercli: the chat body carries `reasoning_effort`
+      // ("none"|"low"|"medium"|"high"|"xhigh"|"max") and `enable_thinking` (bool)
+      // inside `parameters`, alongside `max_tokens`.
+      //
+      // This mirrors the pattern the pi-ai OpenAI provider uses: clamp the
+      // requested level to what the model advertises via thinkingLevelMap, then
+      // map to the upstream effort name. clampThinkingLevel returns "off" when
+      // the level is unsupported or the user disabled thinking.
+      const requestedLevel = options?.reasoning;
+      const clamped = requestedLevel ? clampThinkingLevel(model, requestedLevel) : undefined;
+      const reasoningLevel = clamped === "off" ? undefined : clamped;
+      const parameters: Record<string, unknown> = { max_tokens: maxTokens };
+      if (reasoningLevel) {
+        parameters.enable_thinking = true;
+        // Effort-based models advertise concrete effort names in the map
+        // (low/medium/xhigh/max). Toggle-only models map every level to
+        // "enabled"/"disabled" and accept no effort value — only the on/off
+        // switch matters, so we send enable_thinking alone.
+        const mapped = model.thinkingLevelMap?.[reasoningLevel];
+        const effort = mapped && mapped !== "enabled" && mapped !== "disabled" ? mapped : reasoningLevel;
+        // Only send reasoning_effort when the upstream model actually exposes
+        // effort levels (thinking_config.enabled.efforts).
+        if (modelConfig?.thinking_config?.enabled?.efforts && typeof effort === "string") {
+          parameters.reasoning_effort = effort;
+        }
+      } else {
+        // No reasoning level selected (or clamped to off): explicitly disable
+        // thinking so the model does not reason by default.
+        parameters.enable_thinking = false;
+      }
+
       const reqBody: Record<string, unknown> = {
         request_id: crypto.randomUUID(),
         request_set_id: recordID,
@@ -197,7 +230,7 @@ export function streamQoder(
         system: "",
         messages: systemText ? [{ role: "system", content: systemText }, ...normalizedMessages] : normalizedMessages,
         tools: toolsRaw || [],
-        parameters: { max_tokens: maxTokens },
+        parameters,
         chat_context: {
           chatPrompt: "",
           imageUrls: null,
