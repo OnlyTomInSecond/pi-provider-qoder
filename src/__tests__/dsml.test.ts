@@ -31,6 +31,24 @@ describe("DsmlToolCallParser", () => {
     ]);
   });
 
+  it("parses the ASCII DSML spelling when boundaries are split", () => {
+    const token = "|DSML|";
+    const input =
+      `<${token}tool_calls>\n<${token}invoke name="read">\n` +
+      `<${token}parameter name="limit" string="false">20</${token}parameter>\n` +
+      `<${token}parameter name="path"\n string="true">/tmp/a</${token}parameter>\n` +
+      `</${token}invoke>\n</${token}tool_calls>`;
+    const parser = new DsmlToolCallParser();
+    const events = [];
+    for (const character of input) events.push(...parser.processChunk(character));
+    events.push(...parser.finalize());
+
+    expect(events).toEqual([
+      { type: "tool_start", id: "dsml_call_0", name: "read" },
+      { type: "tool_arguments", id: "dsml_call_0", arguments: '{"limit":20,"path":"/tmp/a"}' },
+    ]);
+  });
+
   it("keeps ordinary text and parses multiple function calls", () => {
     const input =
       `before ${START}\n` +

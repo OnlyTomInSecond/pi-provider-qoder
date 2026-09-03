@@ -3,15 +3,16 @@ export type DsmlParserEvent =
   | { type: "tool_start"; id: string; name: string }
   | { type: "tool_arguments"; id: string; arguments: string };
 
-const DSML_TOKEN = "｜DSML｜";
-const WRAPPER_STARTS = [`<${DSML_TOKEN}tool_calls>`, `<${DSML_TOKEN}function_calls>`] as const;
-const WRAPPER_ENDS = [`</${DSML_TOKEN}tool_calls>`, `</${DSML_TOKEN}function_calls>`] as const;
-const INVOKE_PREFIX = `<${DSML_TOKEN}invoke`;
-const FUNCTION_PREFIX = `<${DSML_TOKEN}function`;
-const PARAMETER_PREFIX = `<${DSML_TOKEN}parameter`;
-const INVOKE_END = `</${DSML_TOKEN}invoke>`;
-const FUNCTION_END = `</${DSML_TOKEN}function>`;
-const PARAMETER_END = `</${DSML_TOKEN}parameter>`;
+// Qoder has emitted both the full-width marker used by Qwen and the ASCII
+// spelling used by some gateway/model combinations. Keep both forms in the
+// state machine so a marker split at any character boundary is still held.
+const DSML_TOKENS = ["｜DSML｜", "|DSML|"] as const;
+const WRAPPER_STARTS = DSML_TOKENS.flatMap((token) => [`<${token}tool_calls>`, `<${token}function_calls>`]);
+const WRAPPER_ENDS = DSML_TOKENS.flatMap((token) => [`</${token}tool_calls>`, `</${token}function_calls>`]);
+const INVOKE_PREFIXES = DSML_TOKENS.map((token) => `<${token}invoke`);
+const FUNCTION_PREFIXES = DSML_TOKENS.map((token) => `<${token}function`);
+const CALL_PREFIXES = [...INVOKE_PREFIXES, ...FUNCTION_PREFIXES];
+const PARAMETER_PREFIXES = DSML_TOKENS.map((token) => `<${token}parameter`);
 
 export const MAX_DSML_BUFFER_LENGTH = 8 * 1024 * 1024;
 
@@ -95,13 +96,13 @@ export class DsmlToolCallParser {
           continue;
         }
 
-        const prefix = startsWithAny(this.buffer, [INVOKE_PREFIX, FUNCTION_PREFIX]);
+        const prefix = startsWithAny(this.buffer, CALL_PREFIXES);
         if (prefix) {
           const close = this.buffer.indexOf(">");
           if (close === -1) break;
 
           const header = this.buffer.slice(0, close + 1);
-          const match = header.match(new RegExp(`^<${DSML_TOKEN}(invoke|function)\\s+name="([^"]*)">$`));
+          const match = parseCallHeader(header);
           if (!match) {
             this.fallback(events);
             continue;
@@ -110,17 +111,17 @@ export class DsmlToolCallParser {
           const id = `dsml_call_${this.callNumber++}`;
           this.currentCall = {
             id,
-            name: match[2],
-            endTag: match[1] === "function" ? FUNCTION_END : INVOKE_END,
+            name: match.name,
+            endTag: `</${match.token}${match.kind}>`,
             parameters: new Map(),
           };
           this.buffer = this.buffer.slice(header.length);
           this.state = "call";
-          events.push({ type: "tool_start", id, name: match[2] });
+          events.push({ type: "tool_start", id, name: match.name });
           continue;
         }
 
-        if (!final && isPartialPrefix(this.buffer, [...WRAPPER_ENDS, INVOKE_PREFIX, FUNCTION_PREFIX])) break;
+        if (!final && isPartialPrefix(this.buffer, [...WRAPPER_ENDS, ...CALL_PREFIXES])) break;
         this.fallback(events);
         continue;
       }
@@ -141,37 +142,36 @@ export class DsmlToolCallParser {
         continue;
       }
 
-      if (this.buffer.startsWith(PARAMETER_PREFIX)) {
+      if (startsWithAny(this.buffer, PARAMETER_PREFIXES)) {
         const openingEnd = this.buffer.indexOf(">");
         if (openingEnd === -1) break;
         const opening = this.buffer.slice(0, openingEnd + 1);
-        const match = opening.match(
-          new RegExp(`^<${DSML_TOKEN}parameter\\s+name="([^"]+)"\\s+string="(true|false)">$`),
-        );
+        const match = parseParameterHeader(opening);
         if (!match) {
           this.fallback(events);
           continue;
         }
 
-        const closing = this.buffer.indexOf(PARAMETER_END, opening.length);
+        const parameterEnd = `</${match.token}parameter>`;
+        const closing = this.buffer.indexOf(parameterEnd, opening.length);
         if (closing === -1) break;
         const value = this.buffer.slice(opening.length, closing);
-        if (call.parameters.has(match[1])) {
+        if (call.parameters.has(match.name)) {
           this.fallback(events);
           continue;
         }
 
-        const encoded = encodeParameterValue(value, match[2] === "true");
+        const encoded = encodeParameterValue(value, match.isString);
         if (encoded === undefined) {
           this.fallback(events);
           continue;
         }
-        call.parameters.set(match[1], encoded);
-        this.buffer = this.buffer.slice(closing + PARAMETER_END.length);
+        call.parameters.set(match.name, encoded);
+        this.buffer = this.buffer.slice(closing + parameterEnd.length);
         continue;
       }
 
-      if (!final && isPartialPrefix(this.buffer, [call.endTag, PARAMETER_PREFIX])) break;
+      if (!final && isPartialPrefix(this.buffer, [call.endTag, ...PARAMETER_PREFIXES])) break;
       this.fallback(events);
     }
 
@@ -190,6 +190,28 @@ export class DsmlToolCallParser {
     this.currentCall = undefined;
     this.state = "text";
   }
+}
+
+function parseCallHeader(header: string): { token: string; kind: "invoke" | "function"; name: string } | undefined {
+  for (const token of DSML_TOKENS) {
+    const match = header.match(new RegExp(`^<${escapeRegExp(token)}(invoke|function)\\s+name="([^"]*)">$`));
+    if (match) return { token, kind: match[1] as "invoke" | "function", name: match[2] };
+  }
+  return undefined;
+}
+
+function parseParameterHeader(header: string): { token: string; name: string; isString: boolean } | undefined {
+  for (const token of DSML_TOKENS) {
+    const match = header.match(
+      new RegExp(`^<${escapeRegExp(token)}parameter\\s+name="([^"]+)"\\s+string="(true|false)">$`),
+    );
+    if (match) return { token, name: match[1], isString: match[2] === "true" };
+  }
+  return undefined;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function encodeParameterValue(value: string, isString: boolean): string | undefined {
