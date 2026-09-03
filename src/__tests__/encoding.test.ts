@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { qoderEncodeBody } from "../protocol/encoding.js";
+import { qoderEncodeBody, qoderEncodeBodyAsync } from "../protocol/encoding.js";
 
 describe("qoderEncodeBody", () => {
   it("encodes a simple string", () => {
@@ -66,5 +66,22 @@ describe("qoderEncodeBody", () => {
     const result = qoderEncodeBody(json);
     expect(result).toBeTruthy();
     expect(result).not.toContain("=");
+  });
+
+  it("yields while encoding a large request body", async () => {
+    const input = "x".repeat(256 * 1024);
+    let eventLoopYielded = false;
+    const nextTurn = new Promise<void>((resolve) => {
+      setImmediate(() => {
+        eventLoopYielded = true;
+        resolve();
+      });
+    });
+
+    const encoded = await qoderEncodeBodyAsync(input);
+    await nextTurn;
+
+    expect(encoded).toBe(qoderEncodeBody(input));
+    expect(eventLoopYielded).toBe(true);
   });
 });

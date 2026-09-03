@@ -75,6 +75,40 @@ describe("Qoder model cache", () => {
     expect(getCachedModelConfig("qfmodel", "global")).toBeNull();
   });
 
+  it("preserves Qoder Credit rate metadata from the live catalog", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            chat: [
+              {
+                key: "qmodel_preview",
+                enable: true,
+                display_name: "Qwen3.8-Max",
+                price_factor: 0.5,
+                original_price_factor: 1,
+              },
+              {
+                key: "lite",
+                enable: true,
+                display_name: "Lite",
+              },
+            ],
+          }),
+      }),
+    );
+
+    await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
+
+    const models = getCachedModels("global");
+    expect(models[0].priceFactor).toBe(0.5);
+    expect(models[0].originalPriceFactor).toBe(1);
+    expect(models[1].priceFactor).toBeUndefined();
+    expect(models[1].originalPriceFactor).toBeUndefined();
+  });
+
   it("omits catalog entries without a friendly display name", async () => {
     vi.stubGlobal(
       "fetch",

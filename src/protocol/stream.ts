@@ -16,9 +16,11 @@ import { resolveQoderIdentity } from "../auth/oauth.js";
 import { getCachedModelConfig, MAX_OUTPUT_TOKENS } from "../catalog.js";
 import { buildAuthHeaders, getMachineId } from "../cosy.js";
 import { getQoderChatURL, getQoderRegionConfig } from "../region.js";
-import { qoderEncodeBody } from "./encoding.js";
+import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
+import { qoderEncodeBodyAsync } from "./encoding.js";
 import { stripThinkingTags, ThinkingTagParser } from "./thinking.js";
 import { transformMessagesForQoder, transformTools } from "./transform.js";
+import { parseQoderCreditsUsage, type QoderCreditsUsage } from "./usage.js";
 
 interface ToolCallState {
   arguments: string;
@@ -28,6 +30,14 @@ interface ToolCallState {
   emittedEnd?: boolean;
   contentIndex: number;
 }
+
+type QoderAssistantUsage = AssistantMessage["usage"] & QoderCreditsUsage;
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+const SSE_LINES_PER_YIELD = 32;
 
 function stableHash(prefix: string, ...inputs: string[]): string {
   const hash = crypto.createHash("sha256");
@@ -82,6 +92,12 @@ function contentToText(content: unknown): string {
   return "";
 }
 
+type QoderStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
+type QoderDeltaEvent = Extract<QoderStreamEvent, { type: "text_delta" | "thinking_delta" | "toolcall_delta" }>;
+
+const QODER_STREAM_IDLE_TIMEOUT_MS = 120_000;
+const MAX_SSE_BUFFER_LENGTH = 8 * 1024 * 1024;
+
 export function streamQoder(
   model: Model<Api>,
   context: Context,
@@ -108,6 +124,32 @@ export function streamQoder(
     stopReason: "stop",
     timestamp: Date.now(),
   };
+
+  let pendingDelta: QoderDeltaEvent | null = null;
+  const flushPendingDelta = (): void => {
+    if (pendingDelta) {
+      stream.push(pendingDelta);
+      pendingDelta = null;
+    }
+  };
+  const pushEvent = (event: QoderStreamEvent): void => {
+    if (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_delta") {
+      if (pendingDelta && pendingDelta.type === event.type && pendingDelta.contentIndex === event.contentIndex) {
+        pendingDelta = { ...pendingDelta, delta: pendingDelta.delta + event.delta };
+        return;
+      }
+      flushPendingDelta();
+      pendingDelta = event;
+      return;
+    }
+    flushPendingDelta();
+    stream.push(event);
+  };
+
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let requestController: AbortController | undefined;
+  let removeExternalAbortListener: (() => void) | undefined;
 
   (async () => {
     try {
@@ -143,6 +185,7 @@ export function streamQoder(
 
       const isReasoning = !!modelConfig.is_reasoning;
 
+      await yieldToEventLoop();
       const normalizedMessages = transformMessagesForQoder(context.messages);
       // OMP may supply the system prompt as a single-element content array;
       // Qoder MessagesInputDto#content is a String and rejects an array with
@@ -268,7 +311,8 @@ export function streamQoder(
       };
 
       const bodyBytes = Buffer.from(JSON.stringify(reqBody));
-      const encodedBody = qoderEncodeBody(bodyBytes);
+      await yieldToEventLoop();
+      const encodedBody = await qoderEncodeBodyAsync(bodyBytes);
       const encodedBytes = Buffer.from(encodedBody, "utf8");
 
       const chatURL = getQoderChatURL(providerMode);
@@ -283,6 +327,29 @@ export function streamQoder(
 
       const modelSource = modelConfig.source || "system";
 
+      requestController = new AbortController();
+      const externalSignal = options?.signal;
+      const resetIdleTimer = (): void => {
+        if (idleTimer) clearTimeout(idleTimer);
+        const configuredIdleTimeout = Number(process.env.QODER_STREAM_IDLE_TIMEOUT_MS);
+        const idleTimeout =
+          Number.isFinite(configuredIdleTimeout) && configuredIdleTimeout > 0
+            ? configuredIdleTimeout
+            : QODER_STREAM_IDLE_TIMEOUT_MS;
+        idleTimer = setTimeout(() => {
+          requestController?.abort(new Error("Qoder stream idle timeout"));
+        }, idleTimeout);
+      };
+      if (externalSignal) {
+        const abortFromExternal = (): void => requestController?.abort(externalSignal.reason);
+        if (externalSignal.aborted) requestController.abort(externalSignal.reason);
+        else {
+          externalSignal.addEventListener("abort", abortFromExternal, { once: true });
+          removeExternalAbortListener = () => externalSignal.removeEventListener("abort", abortFromExternal);
+        }
+      }
+      resetIdleTimer();
+
       const response = await fetch(chatURL, {
         method: "POST",
         headers: {
@@ -295,15 +362,16 @@ export function streamQoder(
           ...headers,
         },
         body: encodedBytes,
-        signal: options?.signal,
+        signal: requestController?.signal,
       });
+      resetIdleTimer();
 
       if (!response.ok) {
         const errText = await response.text();
         throw new Error(`Qoder API request failed: ${response.status} ${response.statusText}. Response: ${errText}`);
       }
 
-      const reader = response.body?.getReader();
+      reader = response.body?.getReader();
       if (!reader) throw new Error("No response body");
       const decoder = new TextDecoder();
       let buffer = "";
@@ -313,9 +381,84 @@ export function streamQoder(
       const toolCallsState: ToolCallState[] = [];
 
       const thinkingEnabled = (options?.reasoning as unknown) !== false && (options?.reasoning as unknown) !== "off";
-      const thinkingParser = thinkingEnabled ? new ThinkingTagParser(output, stream) : null;
+      const thinkingParser = thinkingEnabled ? new ThinkingTagParser(output, stream, pushEvent) : null;
+      const dsmlParser = new DsmlToolCallParser();
 
-      stream.push({ type: "start", partial: output });
+      const endApiThinking = (): void => {
+        if (thinkingBlockIndex === -1) return;
+        const block = output.content[thinkingBlockIndex] as ThinkingContent;
+        pushEvent({
+          type: "thinking_end",
+          contentIndex: thinkingBlockIndex,
+          content: block.thinking,
+          partial: output,
+        });
+        thinkingBlockIndex = -1;
+      };
+
+      const processTextChunk = (text: string): void => {
+        if (!text) return;
+        if (thinkingParser) {
+          thinkingParser.processChunk(text);
+          return;
+        }
+        if (contentBlockIndex === -1) {
+          contentBlockIndex = output.content.length;
+          output.content.push({ type: "text", text: "" });
+          pushEvent({ type: "text_start", contentIndex: contentBlockIndex, partial: output });
+        }
+        const block = output.content[contentBlockIndex] as TextContent;
+        block.text += text;
+        pushEvent({
+          type: "text_delta",
+          contentIndex: contentBlockIndex,
+          delta: text,
+          partial: output,
+        });
+      };
+
+      const processDsmlEvent = (event: DsmlParserEvent): void => {
+        if (event.type === "text") {
+          processTextChunk(event.text);
+          return;
+        }
+
+        endApiThinking();
+        if (event.type === "tool_start") {
+          const state: ToolCallState = {
+            arguments: "",
+            id: event.id,
+            name: event.name,
+            contentIndex: output.content.length,
+            emittedStart: true,
+          };
+          toolCallsState.push(state);
+          output.content.push({
+            type: "toolCall",
+            id: state.id,
+            name: state.name,
+            arguments: {},
+          } satisfies ToolCall);
+          pushEvent({ type: "toolcall_start", contentIndex: state.contentIndex, partial: output });
+          return;
+        }
+
+        const state = toolCallsState.find((candidate) => candidate?.id === event.id && candidate.emittedStart);
+        if (!state || !event.arguments) return;
+        state.arguments += event.arguments;
+        pushEvent({
+          type: "toolcall_delta",
+          contentIndex: state.contentIndex,
+          delta: event.arguments,
+          partial: output,
+        });
+      };
+
+      const processDsmlChunk = (content: string): void => {
+        for (const event of dsmlParser.processChunk(content)) processDsmlEvent(event);
+      };
+
+      pushEvent({ type: "start", partial: output });
 
       // `data: [DONE]` is the end of the response. Break the read loop too, not
       // just the line loop: Qoder's gateway keeps the HTTP body open after the
@@ -323,19 +466,35 @@ export function streamQoder(
       // server or the OS eventually closed the socket. The full reply had
       // already been streamed by then, so the agent looked stuck with no error.
       let sawDone = false;
+      let linesSinceYield = 0;
 
       while (!sawDone) {
         const { done, value } = await reader.read();
         if (done) break;
+        resetIdleTimer();
 
         buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > MAX_SSE_BUFFER_LENGTH && !buffer.includes("\n")) {
+          throw new Error(`Qoder SSE buffer exceeded ${MAX_SSE_BUFFER_LENGTH} characters without a complete line`);
+        }
 
         while (true) {
           const lineEnd = buffer.indexOf("\n");
-          if (lineEnd === -1) break;
+          if (lineEnd === -1) {
+            if (buffer.length > MAX_SSE_BUFFER_LENGTH) {
+              throw new Error(`Qoder SSE buffer exceeded ${MAX_SSE_BUFFER_LENGTH} characters without a complete line`);
+            }
+            break;
+          }
 
           const line = buffer.substring(0, lineEnd).trim();
           buffer = buffer.substring(lineEnd + 1);
+
+          if (++linesSinceYield >= SSE_LINES_PER_YIELD) {
+            linesSinceYield = 0;
+            flushPendingDelta();
+            await yieldToEventLoop();
+          }
 
           if (!line.startsWith("data:")) continue;
 
@@ -392,6 +551,15 @@ export function streamQoder(
               output.usage.totalTokens = u.total_tokens ?? 0;
               output.usage.cacheRead = cacheReadTokens;
               output.usage.cacheWrite = cacheWriteTokens;
+              if (typeof u.completion_tokens_details?.reasoning_tokens === "number") {
+                output.usage.reasoning = u.completion_tokens_details.reasoning_tokens;
+              }
+
+              // Qoder Credits are not USD and pi-ai 0.80 has no native Credits
+              // field. Preserve the official optional names on the runtime
+              // usage object so hosts can read them without corrupting
+              // usage.cost. Missing fields remain absent, not zero.
+              Object.assign(output.usage as QoderAssistantUsage, parseQoderCreditsUsage(inner.usage));
             }
             if (inner.choices && inner.choices.length > 0) {
               const choice = inner.choices[0];
@@ -410,11 +578,11 @@ export function streamQoder(
                     if (thinkingBlockIndex === -1) {
                       thinkingBlockIndex = output.content.length;
                       output.content.push({ type: "thinking", thinking: "" });
-                      stream.push({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
+                      pushEvent({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
                     }
                     const block = output.content[thinkingBlockIndex] as ThinkingContent;
                     block.thinking += reasoningChunk;
-                    stream.push({
+                    pushEvent({
                       type: "thinking_delta",
                       contentIndex: thinkingBlockIndex,
                       delta: reasoningChunk,
@@ -423,39 +591,14 @@ export function streamQoder(
                   }
                 }
 
-                // 2. Process text content
+                // 2. Process text content. DSML tool calls may be embedded in
+                // delta.content when the gateway fails to expose tool_calls.
                 if (delta.content) {
-                  // End API thinking block if active
-                  if (thinkingBlockIndex !== -1) {
-                    const block = output.content[thinkingBlockIndex] as ThinkingContent;
-                    stream.push({
-                      type: "thinking_end",
-                      contentIndex: thinkingBlockIndex,
-                      content: block.thinking,
-                      partial: output,
-                    });
-                    thinkingBlockIndex = -1;
-                  }
-
-                  if (thinkingParser) {
-                    thinkingParser.processChunk(delta.content);
-                  } else {
-                    if (contentBlockIndex === -1) {
-                      contentBlockIndex = output.content.length;
-                      output.content.push({ type: "text", text: "" });
-                      stream.push({ type: "text_start", contentIndex: contentBlockIndex, partial: output });
-                    }
-                    const block = output.content[contentBlockIndex] as TextContent;
-                    block.text += delta.content;
-                    stream.push({
-                      type: "text_delta",
-                      contentIndex: contentBlockIndex,
-                      delta: delta.content,
-                      partial: output,
-                    });
-                  }
+                  // End API thinking block if active before switching to text or
+                  // a tool call embedded in the content stream.
+                  endApiThinking();
+                  processDsmlChunk(delta.content);
                 }
-
                 // 3. Process tool calls
                 if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
                   for (const tc of delta.tool_calls) {
@@ -485,7 +628,7 @@ export function streamQoder(
                         name: state.name,
                         arguments: {},
                       } satisfies ToolCall);
-                      stream.push({ type: "toolcall_start", contentIndex: state.contentIndex, partial: output });
+                      pushEvent({ type: "toolcall_start", contentIndex: state.contentIndex, partial: output });
                     }
 
                     // id and name can arrive after the block is open; keep it
@@ -499,7 +642,7 @@ export function streamQoder(
                     if (tc.function?.arguments) {
                       const argDelta = tc.function.arguments;
                       state.arguments += argDelta;
-                      stream.push({
+                      pushEvent({
                         type: "toolcall_delta",
                         contentIndex: state.contentIndex,
                         delta: argDelta,
@@ -531,9 +674,11 @@ export function streamQoder(
         }
       }
 
-      // Stop reading and let the connection go once the reply is complete.
-      // Without this the body stays open until the server times it out.
-      await reader.cancel().catch(() => {});
+      // The reader is cancelled in finally so normal completion, parsing errors,
+      // idle timeouts, and external aborts all release the connection.
+
+      // Flush any text or DSML markup split across the final content delta.
+      for (const event of dsmlParser.finalize()) processDsmlEvent(event);
 
       if (thinkingParser) {
         thinkingParser.finalize();
@@ -541,7 +686,7 @@ export function streamQoder(
 
       if (thinkingBlockIndex !== -1) {
         const block = output.content[thinkingBlockIndex] as ThinkingContent;
-        stream.push({
+        pushEvent({
           type: "thinking_end",
           contentIndex: thinkingBlockIndex,
           content: block.thinking,
@@ -558,7 +703,7 @@ export function streamQoder(
           } catch {}
           const block = output.content[state.contentIndex] as ToolCall;
           block.arguments = args;
-          stream.push({
+          pushEvent({
             type: "toolcall_end",
             contentIndex: state.contentIndex,
             toolCall: {
@@ -581,7 +726,7 @@ export function streamQoder(
       // Otherwise keep whatever finish_reason set upstream (defaults to "stop").
       // Never overwrite a meaningful finish_reason ("length", "content_filter",
       // ...) with "stop".
-      stream.push({
+      pushEvent({
         type: "done",
         reason: output.stopReason as Extract<AssistantMessage["stopReason"], "stop" | "length" | "toolUse">,
         message: output,
@@ -590,10 +735,14 @@ export function streamQoder(
     } catch (e: unknown) {
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage = e instanceof Error ? e.message : String(e);
-      stream.push({ type: "error", reason: output.stopReason, error: output });
+      pushEvent({ type: "error", reason: output.stopReason, error: output });
       try {
         stream.end();
       } catch {}
+    } finally {
+      if (idleTimer) clearTimeout(idleTimer);
+      removeExternalAbortListener?.();
+      if (reader) await reader.cancel().catch(() => {});
     }
   })();
 
