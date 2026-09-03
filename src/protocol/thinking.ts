@@ -1,5 +1,6 @@
 import type {
   AssistantMessage,
+  AssistantMessageEvent,
   AssistantMessageEventStream,
   TextContent,
   ThinkingContent,
@@ -55,11 +56,15 @@ export class ThinkingTagParser {
   private textBlockIndex: number | null = null;
   private lastTextBlockIndex: number | null = null;
   private activeEndTag: string = THINKING_TAG_VARIANTS[0].close;
+  private readonly emitEvent: (event: AssistantMessageEvent) => void;
 
   constructor(
     private output: AssistantMessage,
-    private stream: AssistantMessageEventStream,
-  ) {}
+    stream: AssistantMessageEventStream,
+    emitEvent?: (event: AssistantMessageEvent) => void,
+  ) {
+    this.emitEvent = emitEvent ?? ((event) => stream.push(event));
+  }
 
   processChunk(chunk: string): void {
     this.textBuffer += chunk;
@@ -86,13 +91,13 @@ export class ThinkingTagParser {
     if (this.inThinking && this.thinkingBlockIndex !== null) {
       const block = this.output.content[this.thinkingBlockIndex] as ThinkingContent;
       block.thinking += this.textBuffer;
-      this.stream.push({
+      this.emitEvent({
         type: "thinking_delta",
         contentIndex: this.thinkingBlockIndex,
         delta: this.textBuffer,
         partial: this.output,
       });
-      this.stream.push({
+      this.emitEvent({
         type: "thinking_end",
         contentIndex: this.thinkingBlockIndex,
         content: block.thinking,
@@ -169,7 +174,7 @@ export class ThinkingTagParser {
       if (endPos > 0) this.emitThinking(this.textBuffer.slice(0, endPos));
       if (this.thinkingBlockIndex !== null) {
         const block = this.output.content[this.thinkingBlockIndex] as ThinkingContent;
-        this.stream.push({
+        this.emitEvent({
           type: "thinking_end",
           contentIndex: this.thinkingBlockIndex,
           content: block.thinking,
@@ -203,11 +208,11 @@ export class ThinkingTagParser {
     if (this.textBlockIndex === null) {
       this.textBlockIndex = this.output.content.length;
       this.output.content.push({ type: "text", text: "" });
-      this.stream.push({ type: "text_start", contentIndex: this.textBlockIndex, partial: this.output });
+      this.emitEvent({ type: "text_start", contentIndex: this.textBlockIndex, partial: this.output });
     }
     const block = this.output.content[this.textBlockIndex] as TextContent;
     block.text += text;
-    this.stream.push({ type: "text_delta", contentIndex: this.textBlockIndex, delta: text, partial: this.output });
+    this.emitEvent({ type: "text_delta", contentIndex: this.textBlockIndex, delta: text, partial: this.output });
   }
 
   private emitThinking(thinking: string): void {
@@ -221,11 +226,11 @@ export class ThinkingTagParser {
         this.thinkingBlockIndex = this.output.content.length;
         this.output.content.push({ type: "thinking", thinking: "" });
       }
-      this.stream.push({ type: "thinking_start", contentIndex: this.thinkingBlockIndex, partial: this.output });
+      this.emitEvent({ type: "thinking_start", contentIndex: this.thinkingBlockIndex, partial: this.output });
     }
     const block = this.output.content[this.thinkingBlockIndex] as ThinkingContent;
     block.thinking += thinking;
-    this.stream.push({
+    this.emitEvent({
       type: "thinking_delta",
       contentIndex: this.thinkingBlockIndex,
       delta: thinking,

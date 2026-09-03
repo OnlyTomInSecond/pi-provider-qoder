@@ -2,8 +2,13 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { autoLoginQoderFromEnvironment, getCachedCredentials, getQoderPatForMode } from "../auth/oauth.js";
-import { credentialsFromPat } from "../auth/pat.js";
+import {
+  autoLoginQoderFromEnvironment,
+  getCachedCredentials,
+  getQoderPatForMode,
+  resolveQoderIdentity,
+} from "../auth/oauth.js";
+import { credentialsFromPat, fetchUserInfo } from "../auth/pat.js";
 import { updateQoderModelsCache } from "../catalog.js";
 import { loadLiveFixture } from "./live-fixture.js";
 
@@ -19,6 +24,11 @@ vi.mock("../auth/pat.js", () => ({
     name: "Test User",
     machineID: "mock-machine-id",
     type: "oauth",
+  }),
+  fetchUserInfo: vi.fn().mockResolvedValue({
+    userID: "userinfo-user-123",
+    email: "userinfo@example.com",
+    name: "User Info Test",
   }),
   isPatRefresh: vi.fn().mockReturnValue(false),
   decodePatRefresh: vi.fn(),
@@ -116,5 +126,30 @@ describe("oauth autoLoginQoderFromEnvironment", () => {
       identity.email,
       "global",
     );
+  });
+
+  it("deduplicates concurrent identity lookups and reuses the result", async () => {
+    const accessToken = "identity-cache-test-token";
+    const providerID = "identity-cache-test-provider";
+    let resolveUserInfo: ((value: { userID: string; email: string; name: string }) => void) | undefined;
+    vi.mocked(fetchUserInfo).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveUserInfo = resolve;
+        }),
+    );
+
+    const first = resolveQoderIdentity(accessToken, providerID, "global");
+    const second = resolveQoderIdentity(accessToken, providerID, "global");
+    resolveUserInfo?.({ userID: "deduplicated-user", email: "deduplicated@example.com", name: "Deduplicated" });
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult.userID).toBe("deduplicated-user");
+    expect(secondResult).toEqual(firstResult);
+    expect(fetchUserInfo).toHaveBeenCalledTimes(1);
+
+    const thirdResult = await resolveQoderIdentity(accessToken, providerID, "global");
+    expect(thirdResult).toEqual(firstResult);
+    expect(fetchUserInfo).toHaveBeenCalledTimes(1);
   });
 });

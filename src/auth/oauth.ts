@@ -107,6 +107,7 @@ export function getCachedCredentials(_accessToken: string, providerID = "qoder")
 }
 
 const identityCache = new Map<string, QoderCredentials>();
+const identityInFlight = new Map<string, Promise<QoderCredentials>>();
 
 /**
  * Resolve the Qoder identity (userID/email/name/machineID) for a chat request.
@@ -122,27 +123,44 @@ export async function resolveQoderIdentity(
   mode: QoderMode,
 ): Promise<QoderCredentials> {
   const region = getQoderRegionConfig(mode);
-  const cached = getCachedCredentials(accessToken, providerID);
-  if (cached?.userID) return cached;
-
   const cacheKey = `${providerID}:${accessToken}`;
+
+  // The common path must not synchronously read auth.json on every request.
   const mem = identityCache.get(cacheKey);
   if (mem?.userID) return mem;
 
-  const info = await fetchUserInfo(accessToken, mode);
-  const machineID = getMachineId();
-  const creds: QoderCredentials = {
-    access: accessToken,
-    userID: info.userID || "qoder-user",
-    email: info.email || region.userEmailFallback,
-    name: info.name || region.userNameFallback,
-    machineID,
-    refresh: "",
-    expires: 0,
-  };
-  identityCache.set(cacheKey, creds);
-  saveCredentialsToAuthFile(providerID, creds);
-  return creds;
+  const cached = getCachedCredentials(accessToken, providerID);
+  if (cached?.userID) {
+    identityCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const pending = identityInFlight.get(cacheKey);
+  if (pending) return pending;
+
+  const promise = (async () => {
+    const info = await fetchUserInfo(accessToken, mode);
+    const machineID = getMachineId();
+    const creds: QoderCredentials = {
+      access: accessToken,
+      userID: info.userID || "qoder-user",
+      email: info.email || region.userEmailFallback,
+      name: info.name || region.userNameFallback,
+      machineID,
+      refresh: "",
+      expires: 0,
+    };
+    identityCache.set(cacheKey, creds);
+    saveCredentialsToAuthFile(providerID, creds);
+    return creds;
+  })();
+
+  identityInFlight.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    identityInFlight.delete(cacheKey);
+  }
 }
 
 export async function loginQoderForMode(callbacks: OAuthLoginCallbacks, mode: QoderMode): Promise<OAuthCredentials> {

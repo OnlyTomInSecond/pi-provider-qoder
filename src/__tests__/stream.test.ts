@@ -220,6 +220,9 @@ describe("streamQoder", () => {
             completion_tokens: 7,
             total_tokens: 49,
             completion_tokens_details: { reasoning_tokens: 3 },
+            credits: 2.75,
+            original_credits: 3.5,
+            billable: true,
             // prompt_tokens (42) INCLUDES cached_tokens (5) per OpenAI
             // semantics; pi-core expects `input` to exclude them
             // (promptTokens = input + cacheRead + cacheWrite), so input =
@@ -243,6 +246,56 @@ describe("streamQoder", () => {
     expect(msg.usage.totalTokens).toBe(49);
     expect(msg.usage.cacheRead).toBe(5);
     expect(msg.usage.cacheWrite).toBe(10);
+    expect(msg.usage.reasoning).toBe(3);
+    const qoderUsage = msg.usage as typeof msg.usage & {
+      credits?: number;
+      original_credits?: number;
+      billable?: boolean;
+    };
+    expect(qoderUsage.credits).toBe(2.75);
+    expect(qoderUsage.original_credits).toBe(3.5);
+    expect(qoderUsage.billable).toBe(true);
+  });
+
+  it("does not invent zero Credits when usage omits Qoder billing fields", async () => {
+    const sse = sseEnvelope(finishChunk("stop")) + DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+    const stream = streamQoder(makeModel(), makeContext(), { apiKey: "fake" });
+    const events = await consume(stream);
+
+    const done = events.find((e) => e.type === "done");
+    const msg = (done as { message: AssistantMessage }).message;
+    expect("credits" in msg.usage).toBe(false);
+    expect("original_credits" in msg.usage).toBe(false);
+    expect("billable" in msg.usage).toBe(false);
+  });
+
+  it("coalesces consecutive text deltas without changing the final content", async () => {
+    const sse =
+      sseEnvelope(chunk({ content: "a", role: "assistant" })) +
+      sseEnvelope(chunk({ content: "b" })) +
+      sseEnvelope(finishChunk("stop")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+    const stream = streamQoder(makeModel(), makeContext(), { apiKey: "fake" });
+    const events = await consume(stream);
+
+    const textDeltas = events.filter((event) => event.type === "text_delta");
+    expect(textDeltas).toHaveLength(1);
+    expect(textDeltas[0] && "delta" in textDeltas[0] ? textDeltas[0].delta : "").toBe("ab");
+  });
+
+  it("finishes a large buffered SSE response without a parser loop", async () => {
+    const sse =
+      Array.from({ length: 100 }, () => sseEnvelope(chunk({ content: "x", role: "assistant" }))).join("") + DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+    const stream = streamQoder(makeModel(), makeContext(), { apiKey: "fake" });
+    const events = await consume(stream);
+
+    const done = events.find((e) => e.type === "done");
+    const msg = (done as { message: AssistantMessage }).message;
+    const text = msg.content.find((content) => content.type === "text");
+    expect(text && "text" in text ? text.text : "").toBe("x".repeat(100));
   });
 
   it("emits a done event with reason=length when finish_reason is length", async () => {
@@ -472,6 +525,26 @@ describe("streamQoder", () => {
     expect(text && "text" in text ? text.text : "").toBe("hi");
   });
 
+  it("rejects an unbounded SSE line and cancels its reader", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${"x".repeat(8 * 1024 * 1024)}`));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    globalThis.fetch = vi.fn(
+      async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    ) as unknown as typeof fetch;
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    const error = events.find((event) => event.type === "error") as { error: AssistantMessage };
+    expect(error.error.errorMessage).toMatch(/SSE buffer exceeded/);
+    expect(cancelled).toBe(true);
+  });
+
   it("reports aborted when the request is cancelled before streaming starts", async () => {
     const controller = new AbortController();
     globalThis.fetch = vi.fn(
@@ -496,5 +569,67 @@ describe("streamQoder", () => {
     const error = events.find((event) => event.type === "error") as { error: AssistantMessage };
     expect(error.error.stopReason).toBe("aborted");
     expect(events.find((event) => event.type === "done")).toBeUndefined();
+  });
+
+  it("aborts an idle SSE response and releases its reader", async () => {
+    const originalTimeout = process.env.QODER_STREAM_IDLE_TIMEOUT_MS;
+    process.env.QODER_STREAM_IDLE_TIMEOUT_MS = "10";
+    try {
+      let cancelled = false;
+      let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyController = controller;
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      globalThis.fetch = vi.fn(async (_input, init) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => {
+            cancelled = true;
+            bodyController?.error(init.signal?.reason);
+          },
+          { once: true },
+        );
+        return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }) as unknown as typeof fetch;
+
+      const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+      const error = events.find((event) => event.type === "error") as { error: AssistantMessage };
+      expect(error.error.errorMessage).toMatch(/idle timeout/);
+      expect(cancelled).toBe(true);
+    } finally {
+      if (originalTimeout === undefined) delete process.env.QODER_STREAM_IDLE_TIMEOUT_MS;
+      else process.env.QODER_STREAM_IDLE_TIMEOUT_MS = originalTimeout;
+    }
+  });
+
+  it("converts leaked DSML content into a tool call", async () => {
+    const dsml =
+      `<｜DSML｜tool_calls>\n<｜DSML｜invoke name="bash">\n` +
+      `<｜DSML｜parameter name="command" string="true">ls</｜DSML｜parameter>\n` +
+      `</｜DSML｜invoke>\n</｜DSML｜tool_calls>`;
+    const sse =
+      sseEnvelope(chunk({ content: dsml.slice(0, 19) })) +
+      sseEnvelope(chunk({ content: dsml.slice(19) })) +
+      sseEnvelope(finishChunk("stop")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+    const toolCall = done.message.content.find((content): content is ToolCall => content.type === "toolCall");
+
+    expect(toolCall).toEqual({
+      type: "toolCall",
+      id: "dsml_call_0",
+      name: "bash",
+      arguments: { command: "ls" },
+    });
+    expect(done.message.content.find((content) => content.type === "text")).toBeUndefined();
+    expect(done.message.stopReason).toBe("toolUse");
   });
 });
