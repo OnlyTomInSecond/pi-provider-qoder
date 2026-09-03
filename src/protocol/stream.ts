@@ -10,7 +10,6 @@ import {
   type SimpleStreamOptions,
   type TextContent,
   type ThinkingContent,
-  type ToolCall,
 } from "@earendil-works/pi-ai";
 import { resolveQoderIdentity } from "../auth/oauth.js";
 import { getCachedModelConfig, MAX_OUTPUT_TOKENS } from "../catalog.js";
@@ -19,17 +18,9 @@ import { getQoderChatURL, getQoderRegionConfig } from "../region.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
 import { qoderEncodeBodyAsync } from "./encoding.js";
 import { stripThinkingTags, ThinkingTagParser } from "./thinking.js";
-import { transformMessagesForQoder, transformTools } from "./transform.js";
+import { ToolCallAccumulator } from "./tool-calls.js";
+import { contentToText, transformMessagesForQoder, transformTools } from "./transform.js";
 import { parseQoderCreditsUsage, type QoderCreditsUsage } from "./usage.js";
-
-interface ToolCallState {
-  arguments: string;
-  id: string;
-  name: string;
-  emittedStart?: boolean;
-  emittedEnd?: boolean;
-  contentIndex: number;
-}
 
 type QoderAssistantUsage = AssistantMessage["usage"] & QoderCreditsUsage;
 
@@ -49,47 +40,34 @@ function stableHash(prefix: string, ...inputs: string[]): string {
   return hash.digest("hex").slice(0, 16);
 }
 
-function stableChatRecordID(
-  model: string,
-  messages: Array<{ role?: string; content?: unknown }>,
-  tools: unknown,
-  maxTokens: number,
-): string {
-  const hash = crypto.createHash("sha256");
-  hash.update("qoder-record");
-  hash.update("\0");
-  hash.update(model);
-  for (const msg of messages) {
-    if (msg?.role) {
-      hash.update("\0");
-      hash.update(msg.role);
-    }
-    if (msg?.content) {
-      hash.update("\0");
-      hash.update(typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content));
-    }
-  }
-  if (tools) {
-    hash.update("\0");
-    hash.update(JSON.stringify(tools));
-  }
-  hash.update("\0");
-  hash.update(`mt=${maxTokens}`);
-  return hash.digest("hex").slice(0, 16);
+export interface StableRecordIDInput {
+  mode: string;
+  model: string;
+  systemText: string;
+  messages: Array<{ role?: string; content?: unknown }>;
+  tools: unknown;
+  parameters: Record<string, unknown>;
 }
 
-function contentToText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === "string") return part;
-        if (part && typeof part === "object" && "text" in part) return (part as { text: string }).text;
-        return "";
-      })
-      .join("\n");
-  }
-  return "";
+function updateHashField(hash: ReturnType<typeof crypto.createHash>, name: string, value: string): void {
+  const bytes = Buffer.from(value, "utf8");
+  hash.update(name);
+  hash.update(":");
+  hash.update(String(bytes.length));
+  hash.update(":");
+  hash.update(bytes);
+}
+
+export function stableChatRecordID(input: StableRecordIDInput): string {
+  const hash = crypto.createHash("sha256");
+  updateHashField(hash, "schema", "qoder-record-v2");
+  updateHashField(hash, "mode", input.mode);
+  updateHashField(hash, "model", input.model);
+  updateHashField(hash, "system", input.systemText);
+  updateHashField(hash, "messages", JSON.stringify(input.messages));
+  updateHashField(hash, "tools", JSON.stringify(input.tools ?? []));
+  updateHashField(hash, "parameters", JSON.stringify(input.parameters));
+  return hash.digest("hex").slice(0, 16);
 }
 
 type QoderStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
@@ -148,11 +126,26 @@ export function streamQoder(
 
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  let requestController: AbortController | undefined;
+  const requestController = new AbortController();
+  const externalSignal = options?.signal;
   let removeExternalAbortListener: (() => void) | undefined;
+  if (externalSignal) {
+    const abortFromExternal = (): void => requestController.abort(externalSignal.reason);
+    if (externalSignal.aborted) requestController.abort(externalSignal.reason);
+    else {
+      externalSignal.addEventListener("abort", abortFromExternal, { once: true });
+      removeExternalAbortListener = () => externalSignal.removeEventListener("abort", abortFromExternal);
+    }
+  }
+  const throwIfAborted = (): void => {
+    if (!requestController.signal.aborted) return;
+    const reason = requestController.signal.reason;
+    throw reason instanceof Error ? reason : new Error("Qoder request aborted");
+  };
 
   (async () => {
     try {
+      throwIfAborted();
       const providerMode = model.provider === "qoder-cn" ? "cn" : "global";
       const region = getQoderRegionConfig(providerMode);
       const accessToken = options?.apiKey;
@@ -169,6 +162,7 @@ export function streamQoder(
       // cache miss would otherwise send uid "qoder-user" and Qoder CN rejects
       // it with "Login expired" (105).
       const ident = await resolveQoderIdentity(accessToken, model.provider, providerMode);
+      throwIfAborted();
       const userID = ident.userID || "qoder-user";
       const name = ident.name || region.userNameFallback;
       const email = ident.email || region.userEmailFallback;
@@ -186,22 +180,17 @@ export function streamQoder(
       const isReasoning = !!modelConfig.is_reasoning;
 
       await yieldToEventLoop();
+      throwIfAborted();
       const normalizedMessages = transformMessagesForQoder(context.messages);
       // OMP may supply the system prompt as a single-element content array;
       // Qoder MessagesInputDto#content is a String and rejects an array with
       // "Execution failed: set property ... MessagesInputDto#content". Normalize.
-      const systemText = contentToText(context.systemPrompt || "");
+      const systemText = contentToText(context.systemPrompt || "", "\n");
 
       let lastUserText = "";
       for (let i = normalizedMessages.length - 1; i >= 0; i--) {
         if (normalizedMessages[i].role === "user") {
-          const content = normalizedMessages[i].content;
-          lastUserText =
-            typeof content === "string"
-              ? content
-              : Array.isArray(content)
-                ? content.map((c) => ("text" in c ? c.text : "")).join("")
-                : "";
+          lastUserText = contentToText(normalizedMessages[i].content);
           break;
         }
       }
@@ -225,8 +214,6 @@ export function streamQoder(
       }
 
       const toolsRaw = context.tools && context.tools.length > 0 ? transformTools(context.tools) : undefined;
-      const recordID = stableChatRecordID(qoderModel, normalizedMessages, toolsRaw, maxTokens);
-
       // Map pi's thinking level (options.reasoning) to Qoder's request fields.
       // Confirmed from @qoder-ai/qodercli: the chat body carries `reasoning_effort`
       // ("none"|"low"|"medium"|"high"|"xhigh"|"max") and `enable_thinking` (bool)
@@ -258,6 +245,15 @@ export function streamQoder(
         // thinking so the model does not reason by default.
         parameters.enable_thinking = false;
       }
+
+      const recordID = stableChatRecordID({
+        mode: providerMode,
+        model: qoderModel,
+        systemText,
+        messages: normalizedMessages,
+        tools: toolsRaw || [],
+        parameters,
+      });
 
       const reqBody: Record<string, unknown> = {
         request_id: crypto.randomUUID(),
@@ -311,8 +307,10 @@ export function streamQoder(
       };
 
       const bodyBytes = Buffer.from(JSON.stringify(reqBody));
+      throwIfAborted();
       await yieldToEventLoop();
       const encodedBody = await qoderEncodeBodyAsync(bodyBytes);
+      throwIfAborted();
       const encodedBytes = Buffer.from(encodedBody, "utf8");
 
       const chatURL = getQoderChatURL(providerMode);
@@ -326,9 +324,6 @@ export function streamQoder(
       });
 
       const modelSource = modelConfig.source || "system";
-
-      requestController = new AbortController();
-      const externalSignal = options?.signal;
       const resetIdleTimer = (): void => {
         if (idleTimer) clearTimeout(idleTimer);
         const configuredIdleTimeout = Number(process.env.QODER_STREAM_IDLE_TIMEOUT_MS);
@@ -337,17 +332,9 @@ export function streamQoder(
             ? configuredIdleTimeout
             : QODER_STREAM_IDLE_TIMEOUT_MS;
         idleTimer = setTimeout(() => {
-          requestController?.abort(new Error("Qoder stream idle timeout"));
+          requestController.abort(new Error("Qoder stream idle timeout"));
         }, idleTimeout);
       };
-      if (externalSignal) {
-        const abortFromExternal = (): void => requestController?.abort(externalSignal.reason);
-        if (externalSignal.aborted) requestController.abort(externalSignal.reason);
-        else {
-          externalSignal.addEventListener("abort", abortFromExternal, { once: true });
-          removeExternalAbortListener = () => externalSignal.removeEventListener("abort", abortFromExternal);
-        }
-      }
       resetIdleTimer();
 
       const response = await fetch(chatURL, {
@@ -362,7 +349,7 @@ export function streamQoder(
           ...headers,
         },
         body: encodedBytes,
-        signal: requestController?.signal,
+        signal: requestController.signal,
       });
       resetIdleTimer();
 
@@ -378,7 +365,7 @@ export function streamQoder(
 
       let contentBlockIndex = -1;
       let thinkingBlockIndex = -1;
-      const toolCallsState: ToolCallState[] = [];
+      const toolCalls = new ToolCallAccumulator(output, pushEvent);
 
       const thinkingEnabled = (options?.reasoning as unknown) !== false && (options?.reasoning as unknown) !== "off";
       const thinkingParser = thinkingEnabled ? new ThinkingTagParser(output, stream, pushEvent) : null;
@@ -423,35 +410,14 @@ export function streamQoder(
           return;
         }
 
+        thinkingParser?.flushAtBoundary();
         endApiThinking();
         if (event.type === "tool_start") {
-          const state: ToolCallState = {
-            arguments: "",
-            id: event.id,
-            name: event.name,
-            contentIndex: output.content.length,
-            emittedStart: true,
-          };
-          toolCallsState.push(state);
-          output.content.push({
-            type: "toolCall",
-            id: state.id,
-            name: state.name,
-            arguments: {},
-          } satisfies ToolCall);
-          pushEvent({ type: "toolcall_start", contentIndex: state.contentIndex, partial: output });
+          toolCalls.startDsmlCall(event.id, event.name);
           return;
         }
 
-        const state = toolCallsState.find((candidate) => candidate?.id === event.id && candidate.emittedStart);
-        if (!state || !event.arguments) return;
-        state.arguments += event.arguments;
-        pushEvent({
-          type: "toolcall_delta",
-          contentIndex: state.contentIndex,
-          delta: event.arguments,
-          partial: output,
-        });
+        toolCalls.appendDsmlArguments(event.id, event.arguments);
       };
 
       const processDsmlChunk = (content: string): void => {
@@ -576,6 +542,7 @@ export function streamQoder(
                   const reasoningChunk = stripThinkingTags(delta.reasoning_content);
                   if (reasoningChunk) {
                     if (thinkingBlockIndex === -1) {
+                      thinkingParser?.flushAtBoundary();
                       thinkingBlockIndex = output.content.length;
                       output.content.push({ type: "thinking", thinking: "" });
                       pushEvent({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
@@ -599,57 +566,9 @@ export function streamQoder(
                   endApiThinking();
                   processDsmlChunk(delta.content);
                 }
-                // 3. Process tool calls
+                // 3. Process native structured tool calls.
                 if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-                  for (const tc of delta.tool_calls) {
-                    const idx = tc.index ?? 0;
-                    if (!toolCallsState[idx]) {
-                      toolCallsState[idx] = { arguments: "", id: "", name: "", contentIndex: 0 };
-                    }
-                    const state = toolCallsState[idx];
-                    if (tc.id) state.id = tc.id;
-                    if (tc.function?.name) state.name = tc.function.name;
-
-                    // Open the block as soon as the call is IDENTIFIABLE, not
-                    // when its first argument byte arrives. A call whose
-                    // arguments are absent or an empty string — a no-argument
-                    // tool, or a model that sends id+name and then stops — used
-                    // to create a toolCallsState entry and no content block, so
-                    // the finalizer below saw a non-empty state array, set
-                    // stopReason "toolUse", and handed back a message with no
-                    // tool call in it. The agent loop then had nothing to run
-                    // and the turn simply ended, mid-task and without an error.
-                    if (state.emittedStart === undefined && (state.id || state.name)) {
-                      state.emittedStart = true;
-                      state.contentIndex = output.content.length;
-                      output.content.push({
-                        type: "toolCall",
-                        id: state.id,
-                        name: state.name,
-                        arguments: {},
-                      } satisfies ToolCall);
-                      pushEvent({ type: "toolcall_start", contentIndex: state.contentIndex, partial: output });
-                    }
-
-                    // id and name can arrive after the block is open; keep it
-                    // in step, since the finalizer only rewrites `arguments`.
-                    if (state.emittedStart) {
-                      const block = output.content[state.contentIndex] as ToolCall;
-                      block.id = state.id;
-                      block.name = state.name;
-                    }
-
-                    if (tc.function?.arguments) {
-                      const argDelta = tc.function.arguments;
-                      state.arguments += argDelta;
-                      pushEvent({
-                        type: "toolcall_delta",
-                        contentIndex: state.contentIndex,
-                        delta: argDelta,
-                        partial: output,
-                      });
-                    }
-                  }
+                  for (const tc of delta.tool_calls) toolCalls.processNativeDelta(tc);
                 }
               }
 
@@ -694,33 +613,8 @@ export function streamQoder(
         });
       }
 
-      for (const state of toolCallsState) {
-        if (state?.emittedStart && !state.emittedEnd) {
-          state.emittedEnd = true;
-          let args = {};
-          try {
-            args = JSON.parse(state.arguments || "{}");
-          } catch {}
-          const block = output.content[state.contentIndex] as ToolCall;
-          block.arguments = args;
-          pushEvent({
-            type: "toolcall_end",
-            contentIndex: state.contentIndex,
-            toolCall: {
-              type: "toolCall",
-              id: state.id,
-              name: state.name,
-              arguments: args,
-            },
-            partial: output,
-          });
-        }
-      }
-
-      // Guarded on blocks that actually reached the message, not on the state
-      // array being non-empty. Claiming "toolUse" for a message carrying no
-      // tool call is what turned a malformed stream into a silent dead end.
-      if (toolCallsState.some((state) => state?.emittedStart)) {
+      const hasToolCalls = toolCalls.finalize();
+      if (hasToolCalls) {
         output.stopReason = "toolUse";
       }
       // Otherwise keep whatever finish_reason set upstream (defaults to "stop").
