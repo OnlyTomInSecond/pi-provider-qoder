@@ -10,19 +10,10 @@ import {
 } from "../region.js";
 import { credentialsFromPat } from "./pat.js";
 
-type PromptFn = (p: { message: string; placeholder?: string; allowEmpty?: boolean }) => Promise<string>;
-
-function getPrompt(callbacks: OAuthLoginCallbacks): PromptFn {
-  return (callbacks as unknown as { onPrompt: PromptFn }).onPrompt;
-}
-
-function getProgress(callbacks: OAuthLoginCallbacks): ((msg: string) => void) | undefined {
-  return (callbacks as unknown as { onProgress?: (msg: string) => void }).onProgress;
-}
-
-function getSignal(callbacks: OAuthLoginCallbacks): AbortSignal | undefined {
-  return (callbacks as unknown as { signal?: AbortSignal }).signal;
-}
+/** pi's LoginDialog drives the interactive flow through these typed callbacks. */
+const getPrompt = (callbacks: OAuthLoginCallbacks) => callbacks.onPrompt;
+const getProgress = (callbacks: OAuthLoginCallbacks): ((message: string) => void) | undefined => callbacks.onProgress;
+const getSignal = (callbacks: OAuthLoginCallbacks): AbortSignal | undefined => callbacks.signal;
 
 export function generatePKCE() {
   const codeVerifier = crypto.randomBytes(32).toString("base64url");
@@ -125,7 +116,7 @@ async function runDeviceFlow(callbacks: OAuthLoginCallbacks): Promise<OAuthCrede
 
   getProgress(callbacks)?.("Please complete login in your browser...");
 
-  (callbacks as unknown as { onAuth: (info: { url: string; instructions: string }) => void }).onAuth({
+  callbacks.onAuth({
     url: verificationURI,
     instructions: "Click to sign in with your Qoder account in the browser.",
   });

@@ -1,4 +1,4 @@
-import type { Api, Model, OAuthCredentials } from "@earendil-works/pi-ai";
+import type { Api, OAuthCredentials } from "@earendil-works/pi-ai";
 import { registerApiProvider } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import {
@@ -12,11 +12,14 @@ import { getCachedModels, isCacheStale, staticCnModels, staticModels, updateQode
 import { streamQoder } from "./protocol/stream.js";
 import { getQoderBaseUrl, getQoderRegionConfig, QODER_MODES, type QoderMode } from "./region.js";
 
-// pi supports a `fetchUsage` hook on the oauth config at runtime, but it is not
-// part of the published ProviderConfig type. Declare the extension locally.
-type OAuthConfigWithUsage = NonNullable<ProviderConfig["oauth"]> & {
+// pi reads a `fetchUsage` hook off the oauth config at runtime, but it is not
+// part of the published ProviderConfig type. Extend it locally so the hook is
+// typed instead of smuggled through an `as unknown` cast.
+type QoderOAuth = NonNullable<ProviderConfig["oauth"]> & {
   fetchUsage: (credentials: OAuthCredentials) => Promise<unknown>;
 };
+
+type QoderProviderModel = NonNullable<ProviderConfig["models"]>[number];
 
 const QODER_API = "qoder-api" as Api;
 
@@ -31,7 +34,7 @@ function registerQoderApi(): void {
   );
 }
 
-function modelsForProvider(mode: QoderMode, providerID: string): Model<Api>[] {
+function modelsForProvider(mode: QoderMode, providerID: string): QoderProviderModel[] {
   const cached = getCachedModels(mode);
   const modelsToUse = cached.length > 0 ? cached : mode === "cn" ? staticCnModels : staticModels;
 
@@ -39,10 +42,10 @@ function modelsForProvider(mode: QoderMode, providerID: string): Model<Api>[] {
     ...m,
     provider: providerID,
     baseUrl: getQoderBaseUrl(mode),
-  })) as unknown as Model<Api>[];
+  }));
 }
 
-function createQoderOAuth(mode: QoderMode): OAuthConfigWithUsage {
+function createQoderOAuth(mode: QoderMode): QoderOAuth {
   const region = getQoderRegionConfig(mode);
   return {
     name: region.loginName,
@@ -60,31 +63,34 @@ function createQoderOAuth(mode: QoderMode): OAuthConfigWithUsage {
 
 function registerQoderProvider(pi: ExtensionAPI, mode: QoderMode): void {
   const providerID = getQoderRegionConfig(mode).providerID;
-  const oauth = createQoderOAuth(mode);
   pi.registerProvider(providerID, {
     baseUrl: getQoderBaseUrl(mode),
     api: QODER_API,
-    models: modelsForProvider(mode, providerID) as unknown as ProviderConfig["models"],
-    oauth: oauth as ProviderConfig["oauth"],
-    // pi-coding-agent resolves its own nested @earendil-works/pi-ai copy, so the
-    // structurally identical Model/Context types are nominally distinct here.
-    streamSimple: streamQoder as unknown as ProviderConfig["streamSimple"],
+    models: modelsForProvider(mode, providerID),
+    oauth: createQoderOAuth(mode),
+    streamSimple: streamQoder,
   });
 }
 
-async function refreshModelsAtStartup(mode: QoderMode): Promise<void> {
-  const providerID = getQoderRegionConfig(mode).providerID;
+/**
+ * Rebuild the model cache for `mode` when it is missing or stale (>1h old).
+ * Identity comes from the auth file (keyed by token) with region fallbacks, so
+ * a registry/startup token and an auth-file record both work. Login/refresh
+ * are the other rebuild triggers; this covers startup and the case where the
+ * cache was deleted while the token is still valid.
+ */
+async function refreshQoderModelsCache(mode: QoderMode, accessToken?: string): Promise<void> {
   if (!isCacheStale(mode)) return;
-
-  const credentials = getCachedCredentials("", providerID);
-  if (!credentials?.access) return;
-
   const region = getQoderRegionConfig(mode);
+  const providerID = region.providerID;
+  const token = accessToken ?? getCachedCredentials("", providerID)?.access;
+  if (!token) return;
+  const creds = getCachedCredentials(token, providerID);
   await updateQoderModelsCache(
-    credentials.access,
-    credentials.userID || "qoder-user",
-    credentials.name || region.userNameFallback,
-    credentials.email || region.userEmailFallback,
+    token,
+    creds?.userID || "qoder-user",
+    creds?.name || region.userNameFallback,
+    creds?.email || region.userEmailFallback,
     mode,
   );
 }
@@ -96,29 +102,22 @@ export default async function (pi: ExtensionAPI) {
     const providerID = getQoderRegionConfig(mode).providerID;
     try {
       await autoLoginQoderFromEnvironment(providerID, mode);
-      await refreshModelsAtStartup(mode);
+      await refreshQoderModelsCache(mode);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[pi-provider-qoder] Automatic login failed for ${providerID}: ${message}`);
     }
   }
 
-  // Refresh the models cache once per session at startup if it is missing or
-  // stale (>1h old), rather than on every message in the stream hot path.
-  // Login/refresh are the other rebuild triggers; this covers the case where
-  // the cache was deleted while the token is still valid.
+  // Refresh once per session at startup if the cache is missing or stale,
+  // rather than on every message in the stream hot path.
   pi.on("session_start", async (_event, ctx) => {
     for (const mode of QODER_MODES) {
       try {
-        const region = getQoderRegionConfig(mode);
-        const providerID = region.providerID;
+        const providerID = getQoderRegionConfig(mode).providerID;
         const accessToken = await ctx.modelRegistry.getApiKeyForProvider(providerID);
-        if (!accessToken || !isCacheStale(mode)) continue;
-        const creds = getCachedCredentials(accessToken, providerID);
-        const userID = creds?.userID || "qoder-user";
-        const name = creds?.name || region.userNameFallback;
-        const email = creds?.email || region.userEmailFallback;
-        await updateQoderModelsCache(accessToken, userID, name, email, mode);
+        if (!accessToken) continue;
+        await refreshQoderModelsCache(mode, accessToken);
       } catch {
         // Best-effort: fall back to the existing cache / static models.
       }

@@ -1,11 +1,11 @@
 import crypto from "node:crypto";
-import * as PiAi from "@earendil-works/pi-ai";
 import {
   type Api,
   type AssistantMessage,
   type AssistantMessageEventStream,
   type Context,
   clampThinkingLevel,
+  createAssistantMessageEventStream,
   type Model,
   type SimpleStreamOptions,
   type TextContent,
@@ -27,6 +27,11 @@ type QoderAssistantUsage = AssistantMessage["usage"] & QoderCreditsUsage;
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** False only when the host explicitly disabled thinking for this request. */
+function isThinkingRequested(reasoning: unknown): boolean {
+  return reasoning !== false && reasoning !== "off";
 }
 
 const SSE_LINES_PER_YIELD = 32;
@@ -52,9 +57,7 @@ export function streamQoder(
   context: Context,
   options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
-  const StreamCtor = (PiAi as unknown as { AssistantMessageEventStream: new () => AssistantMessageEventStream })
-    .AssistantMessageEventStream;
-  const stream = new StreamCtor();
+  const stream = createAssistantMessageEventStream();
 
   const output: AssistantMessage = {
     role: "assistant",
@@ -343,7 +346,11 @@ export function streamQoder(
       let thinkingBlockIndex = -1;
       const toolCalls = new ToolCallAccumulator(output, pushEvent);
 
-      const thinkingEnabled = (options?.reasoning as unknown) !== false && (options?.reasoning as unknown) !== "off";
+      // Qoder streams can carry <thinking> markup even without an explicit
+      // reasoning request, so tag parsing is on unless the host disabled it.
+      // Older pi builds passed `false`/`"off"` before reasoning became a typed
+      // ThinkingLevel option; keep tolerating those legacy values.
+      const thinkingEnabled = isThinkingRequested(options?.reasoning);
       const thinkingParser = thinkingEnabled ? new ThinkingTagParser(output, stream, pushEvent) : null;
       const dsmlParser = new DsmlToolCallParser();
 
