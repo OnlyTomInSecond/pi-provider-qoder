@@ -17,6 +17,7 @@ import { buildAuthHeaders, getMachineId } from "../cosy.js";
 import { getQoderChatURL, getQoderRegionConfig } from "../region.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
 import { qoderEncodeBodyAsync } from "./encoding.js";
+import { getQoderRunIdentity } from "./run-state.js";
 import { stripThinkingTags, ThinkingTagParser } from "./thinking.js";
 import { ToolCallAccumulator } from "./tool-calls.js";
 import { contentToText, transformMessagesForQoder, transformTools } from "./transform.js";
@@ -37,36 +38,6 @@ function stableHash(prefix: string, ...inputs: string[]): string {
     hash.update("\0");
     hash.update(input);
   }
-  return hash.digest("hex").slice(0, 16);
-}
-
-export interface StableRecordIDInput {
-  mode: string;
-  model: string;
-  systemText: string;
-  messages: Array<{ role?: string; content?: unknown }>;
-  tools: unknown;
-  parameters: Record<string, unknown>;
-}
-
-function updateHashField(hash: ReturnType<typeof crypto.createHash>, name: string, value: string): void {
-  const bytes = Buffer.from(value, "utf8");
-  hash.update(name);
-  hash.update(":");
-  hash.update(String(bytes.length));
-  hash.update(":");
-  hash.update(bytes);
-}
-
-export function stableChatRecordID(input: StableRecordIDInput): string {
-  const hash = crypto.createHash("sha256");
-  updateHashField(hash, "schema", "qoder-record-v2");
-  updateHashField(hash, "mode", input.mode);
-  updateHashField(hash, "model", input.model);
-  updateHashField(hash, "system", input.systemText);
-  updateHashField(hash, "messages", JSON.stringify(input.messages));
-  updateHashField(hash, "tools", JSON.stringify(input.tools ?? []));
-  updateHashField(hash, "parameters", JSON.stringify(input.parameters));
   return hash.digest("hex").slice(0, 16);
 }
 
@@ -246,19 +217,28 @@ export function streamQoder(
         parameters.enable_thinking = false;
       }
 
-      const recordID = stableChatRecordID({
+      // Qoder groups billing/records per agentic "run". qodercli keeps one
+      // request_set_id + business.id per run (created at run start, threaded
+      // through every tool round/retry/subagent); this plugin used to re-derive
+      // them from a hash of the whole (growing) history, so every tool round
+      // looked like a separate never-finished run on the credit ledger. Infer
+      // the run boundary from the message tail and reuse the run identity.
+      const { requestSetId, business } = getQoderRunIdentity({
         mode: providerMode,
         model: qoderModel,
-        systemText,
+        sessionId: sessionID,
         messages: normalizedMessages,
-        tools: toolsRaw || [],
-        parameters,
+        lastUserText,
+        product: "cli",
       });
+      const requestID = crypto.randomUUID();
 
       const reqBody: Record<string, unknown> = {
-        request_id: crypto.randomUUID(),
-        request_set_id: recordID,
-        chat_record_id: recordID,
+        // request_id / chat_record_id are per-request (qodercli sets
+        // chat_record_id = request_id); request_set_id is the run-scoped id.
+        request_id: requestID,
+        request_set_id: requestSetId,
+        chat_record_id: requestID,
         session_id: sessionID,
         stream: true,
         chat_task: "FREE_INPUT",
@@ -295,15 +275,9 @@ export function streamQoder(
           text: lastUserText,
         },
         model_config: modelConfig,
-        business: {
-          product: "cli",
-          version: "1.0.0",
-          type: "agent",
-          stage: "start",
-          id: crypto.randomUUID(),
-          name: lastUserText.substring(0, 30),
-          begin_at: Date.now(),
-        },
+        // Stable per run: same id/name/begin_at across the run's requests;
+        // stage advances init -> start -> processing like qodercli's lifecycle.
+        business,
       };
 
       const bodyBytes = Buffer.from(JSON.stringify(reqBody));
@@ -324,16 +298,18 @@ export function streamQoder(
       });
 
       const modelSource = modelConfig.source || "system";
+      // Resolve the (optional) idle-timeout override once per request instead of
+      // re-reading process.env on every streamed chunk.
+      const configuredIdleTimeout = Number(process.env.QODER_STREAM_IDLE_TIMEOUT_MS);
+      const idleTimeoutMs =
+        Number.isFinite(configuredIdleTimeout) && configuredIdleTimeout > 0
+          ? configuredIdleTimeout
+          : QODER_STREAM_IDLE_TIMEOUT_MS;
       const resetIdleTimer = (): void => {
         if (idleTimer) clearTimeout(idleTimer);
-        const configuredIdleTimeout = Number(process.env.QODER_STREAM_IDLE_TIMEOUT_MS);
-        const idleTimeout =
-          Number.isFinite(configuredIdleTimeout) && configuredIdleTimeout > 0
-            ? configuredIdleTimeout
-            : QODER_STREAM_IDLE_TIMEOUT_MS;
         idleTimer = setTimeout(() => {
           requestController.abort(new Error("Qoder stream idle timeout"));
-        }, idleTimeout);
+        }, idleTimeoutMs);
       };
       resetIdleTimer();
 
