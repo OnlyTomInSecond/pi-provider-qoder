@@ -20,11 +20,10 @@ describe("published Pi extension entry", () => {
     expect(pkg.pi.extensions).toEqual(["./dist/index.js"]);
   });
 
-  it("exports the OpenCode native provider and auth plugin bundles", () => {
-    expect(pkg.exports["./opencode"]).toBe("./dist/opencode.js");
-    expect(pkg.exports["./opencode-auth"]).toBe("./dist/opencode-auth.js");
-    expect(pkg.exports["./opencode-auth-cn"]).toBe("./dist/opencode-auth-cn.js");
+  it("exports the Pi extension bundle", () => {
+    expect(pkg.exports["."]).toBe("./dist/index.js");
     expect(pkg.files).toContain("dist");
+    expect(pkg.exports["./opencode"]).toBeUndefined();
   });
 
   it("keeps every pi.extensions path inside the published files set", () => {
