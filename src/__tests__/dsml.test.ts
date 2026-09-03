@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DsmlToolCallParser } from "../protocol/dsml.js";
+import { DsmlToolCallParser, MAX_DSML_BUFFER_LENGTH } from "../protocol/dsml.js";
 
 const START = "<｜DSML｜tool_calls>";
 const END = "</｜DSML｜tool_calls>";
@@ -64,6 +64,11 @@ describe("DsmlToolCallParser", () => {
       { type: "tool_start", id: "dsml_call_0", name: "configure" },
       { type: "tool_arguments", id: "dsml_call_0", arguments: '{"enabled":true,"options":{"mode":"fast"}}' },
     ]);
+  });
+
+  it("rejects an unbounded incomplete DSML call", () => {
+    const parser = new DsmlToolCallParser();
+    expect(() => parser.processChunk(`${START}${"x".repeat(MAX_DSML_BUFFER_LENGTH)}`)).toThrow(/DSML buffer exceeded/);
   });
 
   it("falls back to the original text for an incomplete or malformed wrapper", () => {

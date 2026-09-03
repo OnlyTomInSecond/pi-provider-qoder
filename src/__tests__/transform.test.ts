@@ -1,6 +1,6 @@
 import type { Message, Tool } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { getContentText, transformMessagesForQoder, transformTools } from "../protocol/transform.js";
+import { contentToText, getContentText, transformMessagesForQoder, transformTools } from "../protocol/transform.js";
 
 // ── getContentText ────────────────────────────────────────────────────────
 
@@ -41,6 +41,20 @@ describe("getContentText", () => {
   it("returns empty string for undefined content", () => {
     const msg = { role: "assistant" } as unknown as Message;
     expect(getContentText(msg)).toBe("");
+  });
+});
+
+describe("contentToText", () => {
+  it("supports an explicit separator for structured prompt content", () => {
+    expect(
+      contentToText(
+        [
+          { type: "text", text: "one" },
+          { type: "text", text: "two" },
+        ],
+        "\n",
+      ),
+    ).toBe("one\ntwo");
   });
 });
 
@@ -393,6 +407,25 @@ describe("transformMessagesForQoder", () => {
 
     expect(result.map((m) => (m as { role: string }).role)).toEqual(["user", "user"]);
     expect(result.some((m) => (m as { role: string }).role === "tool")).toBe(false);
+  });
+
+  it("drops orphan and duplicate tool results from recovered history", () => {
+    const msgs = [
+      { role: "toolResult", toolCallId: "call_orphan", content: "stale" },
+      { role: "user", content: "continue" },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_once", name: "read", arguments: {} }],
+      },
+      { role: "toolResult", toolCallId: "call_once", content: "first" },
+      { role: "toolResult", toolCallId: "call_once", content: "duplicate" },
+    ] as unknown as Message[];
+
+    const result = transformMessagesForQoder(msgs);
+
+    expect(result.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
+    expect((result[2] as { tool_call_id: string; content: string }).tool_call_id).toBe("call_once");
+    expect((result[2] as { content: string }).content).toBe("first");
   });
 
   it("keeps a healthy tool round-trip while dropping an aborted one", () => {

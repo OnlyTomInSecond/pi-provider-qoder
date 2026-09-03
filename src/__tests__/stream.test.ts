@@ -387,6 +387,56 @@ describe("streamQoder", () => {
     ]);
   });
 
+  it("keeps tagged thinking event indexes stable after streamed text", async () => {
+    const sse =
+      sseEnvelope(chunk({ content: "prefix <thinking>reason</thinking> answer" })) +
+      sseEnvelope(finishChunk("stop")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+    const textDelta = events.find(
+      (event): event is Extract<AssistantMessageEvent, { type: "text_delta" }> =>
+        event.type === "text_delta" && event.delta.includes("prefix"),
+    );
+    const thinkingDelta = events.find(
+      (event): event is Extract<AssistantMessageEvent, { type: "thinking_delta" }> =>
+        event.type === "thinking_delta" && event.delta === "reason",
+    );
+
+    expect(done.message.content).toEqual([
+      { type: "text", text: "prefix " },
+      { type: "thinking", thinking: "reason" },
+      { type: "text", text: " answer" },
+    ]);
+    expect(textDelta?.contentIndex).toBe(0);
+    expect(thinkingDelta?.contentIndex).toBe(1);
+    expect(done.message.content[textDelta?.contentIndex ?? -1]?.type).toBe("text");
+    expect(done.message.content[thinkingDelta?.contentIndex ?? -1]?.type).toBe("thinking");
+  });
+
+  it("recovers thinking after content when the upstream switches channels", async () => {
+    const sse =
+      sseEnvelope(chunk({ reasoning_content: "first thought" })) +
+      sseEnvelope(chunk({ content: "answer" })) +
+      sseEnvelope(chunk({ reasoning_content: "second thought" })) +
+      sseEnvelope(chunk({ content: " more" })) +
+      sseEnvelope(finishChunk("stop")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake", reasoning: "high" }));
+    const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+
+    expect(done.message.content).toEqual([
+      { type: "thinking", thinking: "first thought" },
+      { type: "text", text: "answer" },
+      { type: "thinking", thinking: "second thought" },
+      { type: "text", text: " more" },
+    ]);
+  });
+
   it("preserves text emitted before and after a tool call", async () => {
     const sse =
       sseEnvelope(chunk({ content: "before" })) +
@@ -545,6 +595,20 @@ describe("streamQoder", () => {
     expect(cancelled).toBe(true);
   });
 
+  it("does not start request construction after a pre-abort", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled before request"));
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+
+    const events = await consume(
+      streamQoder(makeModel(), makeContext(), { apiKey: "fake", signal: controller.signal }),
+    );
+    const error = events.find((event) => event.type === "error") as { error: AssistantMessage };
+
+    expect(error.error.stopReason).toBe("aborted");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   it("reports aborted when the request is cancelled before streaming starts", async () => {
     const controller = new AbortController();
     globalThis.fetch = vi.fn(
@@ -630,6 +694,54 @@ describe("streamQoder", () => {
       arguments: { command: "ls" },
     });
     expect(done.message.content.find((content) => content.type === "text")).toBeUndefined();
+    expect(done.message.stopReason).toBe("toolUse");
+  });
+
+  it("flushes content thinking before a DSML tool call", async () => {
+    const dsml =
+      `<｜DSML｜tool_calls>\n<｜DSML｜invoke name="bash">\n` +
+      `<｜DSML｜parameter name="command" string="true">ls</｜DSML｜parameter>\n` +
+      `</｜DSML｜invoke>\n</｜DSML｜tool_calls>`;
+    const sse =
+      sseEnvelope(chunk({ content: "<thinking>reason<" })) +
+      sseEnvelope(chunk({ content: dsml })) +
+      sseEnvelope(finishChunk("tool_calls")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+
+    expect(done.message.content).toEqual([
+      { type: "thinking", thinking: "reason<" },
+      { type: "toolCall", id: "dsml_call_0", name: "bash", arguments: { command: "ls" } },
+    ]);
+  });
+
+  it("keeps DSML and native tool-call state isolated", async () => {
+    const dsml =
+      `<｜DSML｜tool_calls>\n<｜DSML｜invoke name="bash">\n` +
+      `<｜DSML｜parameter name="command" string="true">ls</｜DSML｜parameter>\n` +
+      `</｜DSML｜invoke>\n</｜DSML｜tool_calls>`;
+    const sse =
+      sseEnvelope(chunk({ content: dsml })) +
+      sseEnvelope(
+        chunk({
+          tool_calls: [{ index: 0, id: "native_1", function: { name: "search", arguments: '{"q":"x"}' } }],
+        }),
+      ) +
+      sseEnvelope(finishChunk("tool_calls")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+    const toolCalls = done.message.content.filter((content): content is ToolCall => content.type === "toolCall");
+
+    expect(toolCalls).toEqual([
+      { type: "toolCall", id: "dsml_call_0", name: "bash", arguments: { command: "ls" } },
+      { type: "toolCall", id: "native_1", name: "search", arguments: { q: "x" } },
+    ]);
     expect(done.message.stopReason).toBe("toolUse");
   });
 });

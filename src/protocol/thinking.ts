@@ -51,6 +51,9 @@ export function stripThinkingTags(text: string): string {
 export class ThinkingTagParser {
   private textBuffer = "";
   private inThinking = false;
+  // Whether a thinking block has already been completed. This is used only
+  // to preserve the placement of the first block; it must not disable tag
+  // detection because a streamed response can contain multiple blocks.
   private thinkingExtracted = false;
   private thinkingBlockIndex: number | null = null;
   private textBlockIndex: number | null = null;
@@ -70,17 +73,13 @@ export class ThinkingTagParser {
     this.textBuffer += chunk;
     while (this.textBuffer.length > 0) {
       const prevLength = this.textBuffer.length;
-      if (!this.inThinking && !this.thinkingExtracted) {
+      if (!this.inThinking) {
         this.processBeforeThinking();
         if (this.textBuffer.length === 0) break;
       }
       if (this.inThinking) {
         this.processInsideThinking();
         if (this.textBuffer.length === 0) break;
-      }
-      if (this.thinkingExtracted) {
-        this.processAfterThinking();
-        break;
       }
       if (this.textBuffer.length >= prevLength) break;
     }
@@ -107,6 +106,41 @@ export class ThinkingTagParser {
       this.emitText(this.textBuffer);
     }
     this.textBuffer = "";
+  }
+
+  /**
+   * Flush content before an out-of-band tool-call boundary. Unlike finalize(),
+   * this keeps the parser reusable for text that arrives after the tool call.
+   */
+  flushAtBoundary(): void {
+    if (this.inThinking) {
+      if (this.textBuffer.length > 0) {
+        this.emitThinking(this.textBuffer);
+      }
+      this.textBuffer = "";
+      if (this.thinkingBlockIndex !== null) {
+        const block = this.output.content[this.thinkingBlockIndex] as ThinkingContent;
+        this.emitEvent({
+          type: "thinking_end",
+          contentIndex: this.thinkingBlockIndex,
+          content: block.thinking,
+          partial: this.output,
+        });
+      }
+      this.inThinking = false;
+      this.thinkingExtracted = true;
+      this.thinkingBlockIndex = null;
+      this.lastTextBlockIndex = this.textBlockIndex;
+      this.textBlockIndex = null;
+      return;
+    }
+
+    if (this.textBuffer.length > 0) {
+      this.emitText(this.textBuffer);
+      this.textBuffer = "";
+    }
+    this.lastTextBlockIndex = this.textBlockIndex;
+    this.textBlockIndex = null;
   }
 
   getTextBlockIndex(): number | null {
@@ -138,6 +172,10 @@ export class ThinkingTagParser {
     if (bestOpenVariant !== null && (bestCloseVariant === null || bestOpenPos < bestClosePos)) {
       if (bestOpenPos > 0) this.emitText(this.textBuffer.slice(0, bestOpenPos));
       this.textBuffer = this.textBuffer.slice(bestOpenPos + bestOpenVariant.open.length);
+      if (this.thinkingExtracted && this.textBlockIndex !== null) {
+        this.lastTextBlockIndex = this.textBlockIndex;
+        this.textBlockIndex = null;
+      }
       this.activeEndTag = bestOpenVariant.close;
       this.inThinking = true;
       return;
@@ -184,6 +222,7 @@ export class ThinkingTagParser {
       this.textBuffer = this.textBuffer.slice(endPos + this.activeEndTag.length);
       this.inThinking = false;
       this.thinkingExtracted = true;
+      this.thinkingBlockIndex = null;
       this.lastTextBlockIndex = this.textBlockIndex;
       this.textBlockIndex = null;
       if (this.textBuffer.startsWith("\n\n")) this.textBuffer = this.textBuffer.slice(2);
@@ -196,11 +235,6 @@ export class ThinkingTagParser {
       this.emitThinking(this.textBuffer.slice(0, safeLen));
       this.textBuffer = this.textBuffer.slice(safeLen);
     }
-  }
-
-  private processAfterThinking(): void {
-    this.emitText(this.textBuffer);
-    this.textBuffer = "";
   }
 
   private emitText(text: string): void {
@@ -218,14 +252,13 @@ export class ThinkingTagParser {
   private emitThinking(thinking: string): void {
     if (!thinking) return;
     if (this.thinkingBlockIndex === null) {
-      if (this.textBlockIndex !== null) {
-        this.thinkingBlockIndex = this.textBlockIndex;
-        this.output.content.splice(this.thinkingBlockIndex, 0, { type: "thinking", thinking: "" });
-        this.textBlockIndex = this.textBlockIndex + 1;
-      } else {
-        this.thinkingBlockIndex = this.output.content.length;
-        this.output.content.push({ type: "thinking", thinking: "" });
-      }
+      // Never insert before a text block that has already emitted events.
+      // contentIndex is part of the streaming protocol; splicing here would
+      // shift the block while previously emitted text_start/text_delta events
+      // still point at the old index, causing pi's UI to render thinking as
+      // text. Keep blocks append-only so event indexes remain stable.
+      this.thinkingBlockIndex = this.output.content.length;
+      this.output.content.push({ type: "thinking", thinking: "" });
       this.emitEvent({ type: "thinking_start", contentIndex: this.thinkingBlockIndex, partial: this.output });
     }
     const block = this.output.content[this.thinkingBlockIndex] as ThinkingContent;

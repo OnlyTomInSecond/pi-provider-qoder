@@ -38,18 +38,23 @@ interface QoderMessage {
   tool_call_id?: string;
 }
 
+export function contentToText(content: unknown, separator = ""): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+      if ("text" in part && typeof part.text === "string") return part.text;
+      if ("thinking" in part && typeof part.thinking === "string") return part.thinking;
+      return "";
+    })
+    .join(separator);
+}
+
 export function getContentText(msg: Message): string {
-  if (typeof msg.content === "string") return msg.content;
-  if (Array.isArray(msg.content)) {
-    return msg.content
-      .map((c) => {
-        if (c.type === "text") return (c as TextContent).text;
-        if (c.type === "thinking") return (c as ThinkingContent).thinking;
-        return "";
-      })
-      .join("");
-  }
-  return "";
+  return contentToText(msg.content);
 }
 
 /** The image blocks of a message, in order. Empty when there are none. */
@@ -72,34 +77,57 @@ export function transformTools(tools: Tool[]): QoderTool[] {
 export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
   const normalizedMessages: QoderMessage[] = [];
 
-  // Dropping an assistant turn (below) also invalidates its tool calls: the
-  // result that follows would refer to a tool_calls entry that is no longer in
-  // the request, and upstreams reject that with "tool must follow a message
-  // with tool_calls".
+  // Every tool result must refer to exactly one tool call declared by an
+  // earlier assistant message. Agent history can contain orphaned results
+  // after compaction, recovery, or an interrupted tool round; forwarding one
+  // makes Qoder reject the entire next request with "tool must follow a
+  // message with tool_calls". Track declarations while preserving order so
+  // malformed history is repaired at the protocol boundary.
+  const declaredToolCallIds = new Set<string>();
   const droppedToolCallIds = new Set<string>();
+  const emittedToolResultIds = new Set<string>();
+
+  // Pre-scan declarations so an orphan result that appears before a valid
+  // assistant tool-call is still rejected. If a caller supplies only a
+  // standalone toolResult (a useful unit-level/legacy input), leave it
+  // compatible with the previous transformer behavior.
+  for (const msg of messages) {
+    if (msg.role !== "assistant" || !Array.isArray((msg as AssistantMessage).content)) continue;
+
+    const assistant = msg as AssistantMessage;
+    const destination =
+      assistant.stopReason === "error" || assistant.stopReason === "aborted" ? droppedToolCallIds : declaredToolCallIds;
+    for (const block of assistant.content) {
+      if (block.type === "toolCall" && (block as ToolCall).id) {
+        destination.add((block as ToolCall).id);
+      }
+    }
+  }
 
   for (const msg of messages) {
-    // Skip error or aborted messages
+    // Error/aborted assistant turns are omitted entirely. Their tool calls are
+    // therefore not added to declaredToolCallIds, so any following results are
+    // filtered by the validation below.
     if (
       msg.role === "assistant" &&
       ((msg as AssistantMessage).stopReason === "error" || (msg as AssistantMessage).stopReason === "aborted")
     ) {
-      const am = msg as AssistantMessage;
-      if (Array.isArray(am.content)) {
-        for (const block of am.content) {
-          if (block.type === "toolCall") {
-            const id = (block as ToolCall).id;
-            if (id) droppedToolCallIds.add(id);
-          }
-        }
-      }
       continue;
     }
 
-    // Drop the result too, otherwise it refers to a tool_calls entry that is
-    // no longer in the request.
-    if (msg.role === "toolResult" && droppedToolCallIds.has((msg as ToolResultMessage).toolCallId)) {
-      continue;
+    // Qoder requires every tool result to follow a matching assistant
+    // tool_calls entry. Repair malformed or partially recovered agent history
+    // before it reaches the upstream API.
+    if (msg.role === "toolResult") {
+      const toolCallId = (msg as ToolResultMessage).toolCallId;
+      if (droppedToolCallIds.has(toolCallId)) continue;
+      if (
+        declaredToolCallIds.size > 0 &&
+        (!declaredToolCallIds.has(toolCallId) || emittedToolResultIds.has(toolCallId))
+      ) {
+        continue;
+      }
+      if (declaredToolCallIds.has(toolCallId)) emittedToolResultIds.add(toolCallId);
     }
 
     if (msg.role === "user") {

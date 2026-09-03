@@ -71,11 +71,13 @@ describe("ThinkingTagParser", () => {
     parser.processChunk("Hello <thinking>reasoning here</thinking> world");
     parser.finalize();
 
-    // Parser inserts thinking block before existing text via splice, then creates a new text block after
-    expect(output.content).toHaveLength(3);
-    expect(output.content[0]).toMatchObject({ type: "thinking", thinking: "reasoning here" });
-    expect(output.content[1]).toMatchObject({ type: "text", text: "Hello " });
-    expect(output.content[2]).toMatchObject({ type: "text", text: " world" });
+    // Blocks are append-only because contentIndex values are emitted while
+    // streaming and cannot be changed retroactively.
+    expect(output.content).toEqual([
+      { type: "text", text: "Hello " },
+      { type: "thinking", thinking: "reasoning here" },
+      { type: "text", text: " world" },
+    ]);
   });
 
   it("handles thinking-only content", () => {
@@ -95,8 +97,8 @@ describe("ThinkingTagParser", () => {
     parser.finalize();
 
     expect(output.content).toHaveLength(3);
-    expect(output.content[0]).toMatchObject({ type: "thinking", thinking: "reasoning" });
-    expect(output.content[1]).toMatchObject({ type: "text", text: "Hello " });
+    expect(output.content[0]).toMatchObject({ type: "text", text: "Hello " });
+    expect(output.content[1]).toMatchObject({ type: "thinking", thinking: "reasoning" });
     expect(output.content[2]).toMatchObject({ type: "text", text: " world" });
   });
 
@@ -129,8 +131,8 @@ describe("ThinkingTagParser", () => {
     parser.finalize();
 
     expect(output.content).toHaveLength(3);
-    expect(output.content[0]).toMatchObject({ type: "thinking", thinking: "part1 part2" });
-    expect(output.content[1]).toMatchObject({ type: "text", text: "Hello " });
+    expect(output.content[0]).toMatchObject({ type: "text", text: "Hello " });
+    expect(output.content[1]).toMatchObject({ type: "thinking", thinking: "part1 part2" });
     expect(output.content[2]).toMatchObject({ type: "text", text: " world" });
   });
 
@@ -141,22 +143,36 @@ describe("ThinkingTagParser", () => {
     parser.finalize();
 
     expect(output.content).toHaveLength(2);
-    expect(output.content[0]).toMatchObject({ type: "thinking", thinking: "body" });
-    expect(output.content[1]).toMatchObject({ type: "text", text: "text " });
+    expect(output.content[0]).toMatchObject({ type: "text", text: "text " });
+    expect(output.content[1]).toMatchObject({ type: "thinking", thinking: "body" });
   });
 
   // ── Multiple thinking blocks ──────────────────────────────────────────
 
-  it("handles multiple thinking blocks", () => {
+  it("handles multiple thinking blocks without turning the second into text", () => {
     const parser = new ThinkingTagParser(output, stream);
     parser.processChunk("<thinking>first</thinking> text <thinking>second</thinking>");
     parser.finalize();
 
-    // After first thinking block, the parser is in "thinkingExtracted" state
-    // and emits remaining text. The second <thinking> tag is in the post-thinking
-    // text buffer and gets emitted as plain text (parser doesn't re-enter thinking).
-    expect(output.content.length).toBeGreaterThanOrEqual(1);
-    expect(output.content[0]).toMatchObject({ type: "thinking", thinking: "first" });
+    expect(output.content).toEqual([
+      { type: "thinking", thinking: "first" },
+      { type: "text", text: " text " },
+      { type: "thinking", thinking: "second" },
+    ]);
+  });
+
+  it("re-enters thinking mode when a later tag is split across chunks", () => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk("<thinking>first</thinking> answer <thin");
+    parser.processChunk("king>second</thinking> final");
+    parser.finalize();
+
+    expect(output.content).toEqual([
+      { type: "thinking", thinking: "first" },
+      { type: "text", text: " answer " },
+      { type: "thinking", thinking: "second" },
+      { type: "text", text: " final" },
+    ]);
   });
 
   // ── Edge cases ────────────────────────────────────────────────────────
@@ -232,6 +248,27 @@ describe("ThinkingTagParser", () => {
     expect(output.content[0]).toMatchObject({ type: "text", text: "partial" });
   });
 
+  it("keeps emitted content indexes stable when thinking follows text", () => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk("prefix <thinking>reason</thinking> answer");
+    parser.finalize();
+
+    const events = pushMock.mock.calls.map((call) => call[0] as AssistantMessageEvent);
+    const prefixDelta = events.find(
+      (event): event is Extract<AssistantMessageEvent, { type: "text_delta" }> =>
+        event.type === "text_delta" && event.delta === "prefix ",
+    );
+    const thinkingDelta = events.find(
+      (event): event is Extract<AssistantMessageEvent, { type: "thinking_delta" }> =>
+        event.type === "thinking_delta" && event.delta === "reason",
+    );
+
+    expect(prefixDelta?.contentIndex).toBe(0);
+    expect(thinkingDelta?.contentIndex).toBe(1);
+    expect(output.content[prefixDelta?.contentIndex ?? -1]?.type).toBe("text");
+    expect(output.content[thinkingDelta?.contentIndex ?? -1]?.type).toBe("thinking");
+  });
+
   it("finalize flushes remaining thinking when in thinking mode", () => {
     const parser = new ThinkingTagParser(output, stream);
     parser.processChunk("<thinking>unfinished");
@@ -239,6 +276,21 @@ describe("ThinkingTagParser", () => {
 
     expect(output.content).toHaveLength(1);
     expect(output.content[0]).toMatchObject({ type: "thinking", thinking: "unfinished" });
+  });
+
+  it("flushes pending thinking at a tool boundary without ending the parser", () => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk("<thinking>reason<");
+    parser.flushAtBoundary();
+    parser.processChunk("after");
+    parser.finalize();
+
+    expect(output.content).toEqual([
+      { type: "thinking", thinking: "reason<" },
+      { type: "text", text: "after" },
+    ]);
+    const eventTypes = pushMock.mock.calls.map((call) => call[0].type);
+    expect(eventTypes.indexOf("thinking_end")).toBeLessThan(eventTypes.indexOf("text_start"));
   });
 
   // ── Orphan closing tags (opener arrived via reasoning_content) ─────────

@@ -13,6 +13,8 @@ const INVOKE_END = `</${DSML_TOKEN}invoke>`;
 const FUNCTION_END = `</${DSML_TOKEN}function>`;
 const PARAMETER_END = `</${DSML_TOKEN}parameter>`;
 
+export const MAX_DSML_BUFFER_LENGTH = 8 * 1024 * 1024;
+
 interface CurrentCall {
   id: string;
   name: string;
@@ -37,6 +39,9 @@ export class DsmlToolCallParser {
 
   processChunk(chunk: string): DsmlParserEvent[] {
     if (!chunk) return [];
+    if (this.rawStart.length + this.buffer.length + chunk.length > MAX_DSML_BUFFER_LENGTH) {
+      throw new Error(`Qoder DSML buffer exceeded ${MAX_DSML_BUFFER_LENGTH} characters`);
+    }
     this.buffer += chunk;
     return this.drain();
   }
