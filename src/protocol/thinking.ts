@@ -17,20 +17,61 @@ export const THINKING_TAG_VARIANTS: Array<{ open: string; close: string }> = [
   { open: "<summary>", close: "</summary>" },
 ];
 
-function getTrailingPossibleTagPrefixLength(text: string, tag: string): number {
-  const maxPrefixLength = Math.min(text.length, tag.length - 1);
-  for (let len = maxPrefixLength; len > 0; len--) {
-    if (text.endsWith(tag.slice(0, len))) return len;
+/** Every opener/closer string that can appear in the text channel. */
+const ALL_TAG_STRINGS: readonly string[] = THINKING_TAG_VARIANTS.flatMap((variant) => [variant.open, variant.close]);
+
+/**
+ * Longest suffix of `text` that could be the *start* of a longer tag. Used to
+ * hold back a tag that a later chunk may still complete, instead of leaking it
+ * into the visible text.
+ */
+function partialTagSuffixLength(text: string, tags: readonly string[]): number {
+  let longest = 0;
+  for (const tag of tags) {
+    // A complete tag would already have been consumed; only proper prefixes
+    // (shorter than the tag) need to be held back.
+    const maxLength = Math.min(text.length, tag.length - 1);
+    for (let length = maxLength; length > longest; length--) {
+      if (text.endsWith(tag.slice(0, length))) {
+        longest = length;
+        break;
+      }
+    }
   }
-  return 0;
+  return longest;
 }
 
-function getMaxTrailingPossibleTagPrefixLength(text: string, tags: string[]): number {
-  let maxLength = 0;
-  for (const tag of tags) {
-    maxLength = Math.max(maxLength, getTrailingPossibleTagPrefixLength(text, tag));
+interface FoundTag {
+  /** Index of the tag inside the scanned text. */
+  index: number;
+  /** The variant whose open/close tag matched. */
+  variant: (typeof THINKING_TAG_VARIANTS)[number];
+  kind: "open" | "close";
+}
+
+/**
+ * Earliest complete thinking tag in `text`, if any. Openers and closers of
+ * every variant compete by position; the earliest one wins.
+ */
+function findEarliestTag(text: string): FoundTag | null {
+  let best: FoundTag | null = null;
+  for (const variant of THINKING_TAG_VARIANTS) {
+    for (const kind of ["open", "close"] as const) {
+      const tag = variant[kind];
+      const index = text.indexOf(tag);
+      if (index !== -1 && (best === null || index < best.index)) {
+        best = { index, variant, kind };
+      }
+    }
   }
-  return maxLength;
+  return best;
+}
+
+/** Drop a single leading newline pair, or a lone newline, after a tag. */
+function stripFollowingNewline(text: string): string {
+  if (text.startsWith("\n\n")) return text.slice(2);
+  if (text.startsWith("\n")) return text.slice(1);
+  return text;
 }
 
 /**
@@ -46,199 +87,172 @@ function getMaxTrailingPossibleTagPrefixLength(text: string, tags: string[]): nu
 export function stripThinkingTags(text: string): string {
   let out = text;
   for (const { open, close } of THINKING_TAG_VARIANTS) {
-    if (open.length > 0 && out.includes(open)) out = out.split(open).join("");
-    if (close.length > 0 && out.includes(close)) out = out.split(close).join("");
+    if (out.includes(open)) out = out.split(open).join("");
+    if (out.includes(close)) out = out.split(close).join("");
   }
   return out;
 }
 
+type Phase = "text" | "thinking";
+
+/**
+ * Incremental parser for thinking tags carried in the content stream.
+ *
+ * Text outside a tag streams out immediately as `text_*` events; text between
+ * an opener and its closer is routed into a `thinking` block. Content blocks
+ * are append-only so the `contentIndex` carried by every emitted event stays
+ * valid — a later block is never spliced in front of an earlier one.
+ */
 export class ThinkingTagParser {
-  private textBuffer = "";
-  private inThinking = false;
-  // Whether a thinking block has already been completed. This is used only
-  // to preserve the placement of the first block; it must not disable tag
-  // detection because a streamed response can contain multiple blocks.
-  private thinkingExtracted = false;
+  private buffer = "";
+  private phase: Phase = "text";
+  private activeEndTag: string = THINKING_TAG_VARIANTS[0].close;
+  // Set once at least one thinking block has been completed. Used only to end
+  // the current text block before a *later* thinking block starts, so the
+  // thinking block does not reuse that block's index.
+  private sawThinkingBlock = false;
   private thinkingBlockIndex: number | null = null;
   private textBlockIndex: number | null = null;
   private lastTextBlockIndex: number | null = null;
-  private activeEndTag: string = THINKING_TAG_VARIANTS[0].close;
   private readonly emitEvent: (event: AssistantMessageEvent) => void;
 
   constructor(
-    private output: AssistantMessage,
+    private readonly output: AssistantMessage,
     stream: AssistantMessageEventStream,
     emitEvent?: (event: AssistantMessageEvent) => void,
   ) {
     this.emitEvent = emitEvent ?? ((event) => stream.push(event));
   }
 
-  processChunk(chunk: string): void {
-    this.textBuffer += chunk;
-    while (this.textBuffer.length > 0) {
-      const prevLength = this.textBuffer.length;
-      if (!this.inThinking) {
-        this.processBeforeThinking();
-        if (this.textBuffer.length === 0) break;
-      }
-      if (this.inThinking) {
-        this.processInsideThinking();
-        if (this.textBuffer.length === 0) break;
-      }
-      if (this.textBuffer.length >= prevLength) break;
-    }
+  getTextBlockIndex(): number | null {
+    return this.textBlockIndex ?? this.lastTextBlockIndex;
   }
 
-  finalize(): void {
-    if (this.textBuffer.length === 0) return;
-    if (this.inThinking && this.thinkingBlockIndex !== null) {
-      const block = this.output.content[this.thinkingBlockIndex] as ThinkingContent;
-      block.thinking += this.textBuffer;
-      this.emitEvent({
-        type: "thinking_delta",
-        contentIndex: this.thinkingBlockIndex,
-        delta: this.textBuffer,
-        partial: this.output,
-      });
-      this.emitEvent({
-        type: "thinking_end",
-        contentIndex: this.thinkingBlockIndex,
-        content: block.thinking,
-        partial: this.output,
-      });
-    } else {
-      this.emitText(this.textBuffer);
-    }
-    this.textBuffer = "";
+  processChunk(chunk: string): void {
+    this.buffer += chunk;
+    this.scan();
   }
 
   /**
    * Flush content before an out-of-band tool-call boundary. Unlike finalize(),
    * this keeps the parser reusable for text that arrives after the tool call.
+   * Any unclosed thinking text (including a held partial tag) is emitted as
+   * thinking content before the block is closed.
    */
   flushAtBoundary(): void {
-    if (this.inThinking) {
-      if (this.textBuffer.length > 0) {
-        this.emitThinking(this.textBuffer);
-      }
-      this.textBuffer = "";
-      if (this.thinkingBlockIndex !== null) {
-        const block = this.output.content[this.thinkingBlockIndex] as ThinkingContent;
-        this.emitEvent({
-          type: "thinking_end",
-          contentIndex: this.thinkingBlockIndex,
-          content: block.thinking,
-          partial: this.output,
-        });
-      }
-      this.inThinking = false;
-      this.thinkingExtracted = true;
-      this.thinkingBlockIndex = null;
-      this.lastTextBlockIndex = this.textBlockIndex;
-      this.textBlockIndex = null;
+    if (this.phase === "thinking") {
+      this.closeThinking(true);
       return;
     }
-
-    if (this.textBuffer.length > 0) {
-      this.emitText(this.textBuffer);
-      this.textBuffer = "";
-    }
+    if (this.buffer) this.emitText(this.buffer);
+    this.buffer = "";
+    // Remember the text block so the next content starts a fresh block after
+    // whatever came out-of-band (an API thinking block or a tool call).
     this.lastTextBlockIndex = this.textBlockIndex;
     this.textBlockIndex = null;
   }
 
-  getTextBlockIndex(): number | null {
-    return this.textBlockIndex ?? this.lastTextBlockIndex;
+  finalize(): void {
+    if (!this.buffer) return;
+    if (this.phase === "thinking" && this.thinkingBlockIndex !== null) {
+      this.emitThinking(this.buffer);
+      this.emitThinkingEnd();
+    } else {
+      this.emitText(this.buffer);
+    }
+    this.buffer = "";
   }
 
-  private processBeforeThinking(): void {
-    // Find the first opener and first closer in the buffer.
-    let bestOpenPos = -1;
-    let bestOpenVariant: (typeof THINKING_TAG_VARIANTS)[number] | null = null;
-    let bestClosePos = -1;
-    let bestCloseVariant: (typeof THINKING_TAG_VARIANTS)[number] | null = null;
-    for (const variant of THINKING_TAG_VARIANTS) {
-      const openPos = this.textBuffer.indexOf(variant.open);
-      if (openPos !== -1 && (bestOpenPos === -1 || openPos < bestOpenPos)) {
-        bestOpenPos = openPos;
-        bestOpenVariant = variant;
-      }
-      const closePos = this.textBuffer.indexOf(variant.close);
-      if (closePos !== -1 && (bestClosePos === -1 || closePos < bestClosePos)) {
-        bestClosePos = closePos;
-        bestCloseVariant = variant;
-      }
-    }
+  /** Consume as much of `buffer` as the current phase allows. */
+  private scan(): void {
+    while (this.buffer) {
+      if (this.phase === "text") {
+        const tag = findEarliestTag(this.buffer);
 
-    // Opener comes first (or is the only tag): a real thinking block carried
-    // in the content stream. Enter thinking mode; processInsideThinking will
-    // handle its closer.
-    if (bestOpenVariant !== null && (bestCloseVariant === null || bestOpenPos < bestClosePos)) {
-      if (bestOpenPos > 0) this.emitText(this.textBuffer.slice(0, bestOpenPos));
-      this.textBuffer = this.textBuffer.slice(bestOpenPos + bestOpenVariant.open.length);
-      if (this.thinkingExtracted && this.textBlockIndex !== null) {
-        this.lastTextBlockIndex = this.textBlockIndex;
-        this.textBlockIndex = null;
+        // A real thinking block starts here: hand the preceding text over,
+        // then switch into thinking mode.
+        if (tag?.kind === "open") {
+          if (tag.index > 0) this.emitText(this.buffer.slice(0, tag.index));
+          this.buffer = this.buffer.slice(tag.index + tag.variant.open.length);
+          // Never insert a thinking block in front of text that has already
+          // emitted events: end text tracking so the thinking block gets its
+          // own fresh index.
+          if (this.sawThinkingBlock && this.textBlockIndex !== null) {
+            this.lastTextBlockIndex = this.textBlockIndex;
+            this.textBlockIndex = null;
+          }
+          this.activeEndTag = tag.variant.close;
+          this.phase = "thinking";
+          continue;
+        }
+
+        // An orphan closer with no opener: its matching opener was delivered
+        // via the separate `reasoning_content` channel (see stream.ts), so
+        // there is no thinking block to close here. Drop the tag — and the
+        // separator whitespace the model emits right after it — instead of
+        // leaking it into visible text.
+        if (tag?.kind === "close") {
+          if (tag.index > 0) this.emitText(this.buffer.slice(0, tag.index));
+          this.buffer = this.buffer.slice(tag.index + tag.variant.close.length);
+          this.buffer = stripFollowingNewline(this.buffer);
+          continue;
+        }
+
+        // No complete tag yet. Emit everything except a trailing prefix that a
+        // later chunk could still turn into a tag.
+        const hold = partialTagSuffixLength(this.buffer, ALL_TAG_STRINGS);
+        const safeLength = this.buffer.length - hold;
+        if (safeLength <= 0) break;
+        this.emitText(this.buffer.slice(0, safeLength));
+        this.buffer = this.buffer.slice(safeLength);
+        continue;
       }
-      this.activeEndTag = bestOpenVariant.close;
-      this.inThinking = true;
-      return;
-    }
 
-    // Closer with no preceding opener: an orphan close tag. Its matching
-    // opener was delivered via the separate `reasoning_content` channel (see
-    // stream.ts), so there is no thinking block to close here. Drop it — and
-    // the separator whitespace the model emits right after `</thinking>` — so
-    // it does not leak into visible text.
-    if (bestCloseVariant !== null) {
-      if (bestClosePos > 0) this.emitText(this.textBuffer.slice(0, bestClosePos));
-      this.textBuffer = this.textBuffer.slice(bestClosePos + bestCloseVariant.close.length);
-      if (this.textBuffer.startsWith("\n\n")) this.textBuffer = this.textBuffer.slice(2);
-      else if (this.textBuffer.startsWith("\n")) this.textBuffer = this.textBuffer.slice(1);
-      return;
-    }
-
-    // No complete tag yet. Hold back any trailing prefix that could be the
-    // start of an opener OR a closer, so a tag split across stream deltas is
-    // not partially emitted as text.
-    const allTags = THINKING_TAG_VARIANTS.flatMap((variant) => [variant.open, variant.close]);
-    const trailingPrefixLength = getMaxTrailingPossibleTagPrefixLength(this.textBuffer, allTags);
-    const safeLen = this.textBuffer.length - trailingPrefixLength;
-    if (safeLen > 0) {
-      this.emitText(this.textBuffer.slice(0, safeLen));
-      this.textBuffer = this.textBuffer.slice(safeLen);
+      // Thinking phase: look for the closer of the active variant.
+      const end = this.buffer.indexOf(this.activeEndTag);
+      if (end !== -1) {
+        if (end > 0) this.emitThinking(this.buffer.slice(0, end));
+        this.buffer = this.buffer.slice(end + this.activeEndTag.length);
+        // Models often follow the closer with a blank line; drop it.
+        if (this.buffer.startsWith("\n\n")) this.buffer = this.buffer.slice(2);
+        this.closeThinking(false);
+        continue;
+      }
+      const hold = partialTagSuffixLength(this.buffer, [this.activeEndTag]);
+      const safeLength = this.buffer.length - hold;
+      if (safeLength <= 0) break;
+      this.emitThinking(this.buffer.slice(0, safeLength));
+      this.buffer = this.buffer.slice(safeLength);
     }
   }
 
-  private processInsideThinking(): void {
-    const endPos = this.textBuffer.indexOf(this.activeEndTag);
-    if (endPos !== -1) {
-      if (endPos > 0) this.emitThinking(this.textBuffer.slice(0, endPos));
-      if (this.thinkingBlockIndex !== null) {
-        const block = this.output.content[this.thinkingBlockIndex] as ThinkingContent;
-        this.emitEvent({
-          type: "thinking_end",
-          contentIndex: this.thinkingBlockIndex,
-          content: block.thinking,
-          partial: this.output,
-        });
-      }
-      this.textBuffer = this.textBuffer.slice(endPos + this.activeEndTag.length);
-      this.inThinking = false;
-      this.thinkingExtracted = true;
-      this.thinkingBlockIndex = null;
-      this.lastTextBlockIndex = this.textBlockIndex;
-      this.textBlockIndex = null;
-      if (this.textBuffer.startsWith("\n\n")) this.textBuffer = this.textBuffer.slice(2);
-      return;
+  /**
+   * Leave the thinking phase. When `flushPending` is set, whatever is still in
+   * the buffer (e.g. a partial closer held back while waiting for more chunks)
+   * is emitted as thinking content first. The block is always ended and the
+   * text-tracking state reset for the following content.
+   */
+  private closeThinking(flushPending: boolean): void {
+    if (flushPending && this.buffer) {
+      this.emitThinking(this.buffer);
+      this.buffer = "";
     }
+    if (this.thinkingBlockIndex !== null) this.emitThinkingEnd();
+    this.phase = "text";
+    this.sawThinkingBlock = true;
+    this.thinkingBlockIndex = null;
+    this.lastTextBlockIndex = this.textBlockIndex;
+    this.textBlockIndex = null;
+  }
 
-    const trailingPrefixLength = getTrailingPossibleTagPrefixLength(this.textBuffer, this.activeEndTag);
-    const safeLen = this.textBuffer.length - trailingPrefixLength;
-    if (safeLen > 0) {
-      this.emitThinking(this.textBuffer.slice(0, safeLen));
-      this.textBuffer = this.textBuffer.slice(safeLen);
-    }
+  private emitThinkingEnd(): void {
+    const block = this.output.content[this.thinkingBlockIndex as number] as ThinkingContent;
+    this.emitEvent({
+      type: "thinking_end",
+      contentIndex: this.thinkingBlockIndex as number,
+      content: block.thinking,
+      partial: this.output,
+    });
   }
 
   private emitText(text: string): void {
@@ -250,17 +264,17 @@ export class ThinkingTagParser {
     }
     const block = this.output.content[this.textBlockIndex] as TextContent;
     block.text += text;
-    this.emitEvent({ type: "text_delta", contentIndex: this.textBlockIndex, delta: text, partial: this.output });
+    this.emitEvent({
+      type: "text_delta",
+      contentIndex: this.textBlockIndex,
+      delta: text,
+      partial: this.output,
+    });
   }
 
   private emitThinking(thinking: string): void {
     if (!thinking) return;
     if (this.thinkingBlockIndex === null) {
-      // Never insert before a text block that has already emitted events.
-      // contentIndex is part of the streaming protocol; splicing here would
-      // shift the block while previously emitted text_start/text_delta events
-      // still point at the old index, causing pi's UI to render thinking as
-      // text. Keep blocks append-only so event indexes remain stable.
       this.thinkingBlockIndex = this.output.content.length;
       this.output.content.push({ type: "thinking", thinking: "" });
       this.emitEvent({ type: "thinking_start", contentIndex: this.thinkingBlockIndex, partial: this.output });
