@@ -19,17 +19,11 @@
     "README.md"
   ],
   "exports": {
-    ".": "./dist/index.js",
-    "./opencode": "./dist/opencode.js",
-    "./opencode-auth": "./dist/opencode-auth.js",
-    "./opencode-auth-cn": "./dist/opencode-auth-cn.js"
+    ".": "./dist/index.js"
   },
   "scripts": {
     "build:pi": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-ai/compat",
-    "build:opencode": "esbuild src/opencode.ts --bundle --platform=node --format=esm --outfile=dist/opencode.js",
-    "build:opencode-auth": "esbuild src/opencode-auth.ts --bundle --platform=node --format=esm --outfile=dist/opencode-auth.js",
-    "build:opencode-auth-cn": "esbuild src/opencode-auth-cn.ts --bundle --platform=node --format=esm --outfile=dist/opencode-auth-cn.js",
-    "build": "npm run build:pi && npm run build:opencode && npm run build:opencode-auth && npm run build:opencode-auth-cn",
+    "build": "npm run build:pi",
     "check": "node node_modules/typescript/bin/tsc --noEmit",
     "lint": "node node_modules/@biomejs/biome/bin/biome check .",
     "lint:fix": "node node_modules/@biomejs/biome/bin/biome check --write .",
