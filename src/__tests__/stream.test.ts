@@ -355,6 +355,53 @@ describe("streamQoder", () => {
     expect(events.map((event) => event.type)).toContain("thinking_delta");
   });
 
+  it("keeps summary reasoning and leaked DSML calls out of visible text", async () => {
+    const thought = "And checkSignalValByByte in the new code... let me look at what it actually is.";
+    const answer = "好，这是 CS 路由，涉及信号值的验证，流程更复杂。";
+    const token = "｜DSML｜";
+    const dsml =
+      `<${token}tool_calls>\n<${token}invoke name="read">\n` +
+      `<${token}parameter name="limit" string="false">20</${token}parameter>\n` +
+      `<${token}parameter name="offset" string="false">238</${token}parameter>\n` +
+      `<${token}parameter name="path"\n string="true">/home/whh/src/capl_platform/capl/test/test_canroute/canroute_fun.cin</${token}parameter>\n` +
+      `</${token}invoke>\n</${token}tool_calls>`;
+    const split = Math.floor(dsml.length / 2);
+    const sse =
+      sseEnvelope(chunk({ reasoning_content: `<summary>${thought}` })) +
+      sseEnvelope(chunk({ content: `</summary>\n\n${answer}\n\n${dsml.slice(0, split)}` })) +
+      sseEnvelope(chunk({ content: dsml.slice(split) })) +
+      sseEnvelope(finishChunk("tool_calls")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake", reasoning: "high" }));
+    const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+
+    expect(done.message.content).toEqual([
+      { type: "thinking", thinking: thought },
+      { type: "text", text: `${answer}\n\n` },
+      {
+        type: "toolCall",
+        id: "dsml_call_0",
+        name: "read",
+        arguments: {
+          limit: 20,
+          offset: 238,
+          path: "/home/whh/src/capl_platform/capl/test/test_canroute/canroute_fun.cin",
+        },
+      },
+    ]);
+    const visibleText = done.message.content
+      .filter(
+        (content): content is Extract<AssistantMessage["content"][number], { type: "text" }> => content.type === "text",
+      )
+      .map((content) => content.text)
+      .join("");
+    expect(visibleText).not.toContain("</summary>");
+    expect(visibleText).not.toContain("DSML");
+    expect(done.message.stopReason).toBe("toolUse");
+  });
+
   it("assembles parallel tool calls by their stream indexes", async () => {
     const sse =
       sseEnvelope(

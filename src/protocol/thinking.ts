@@ -11,6 +11,10 @@ export const THINKING_TAG_VARIANTS: Array<{ open: string; close: string }> = [
   { open: "<think>", close: "</think>" },
   { open: "<reasoning>", close: "</reasoning>" },
   { open: "<thought>", close: "</thought>" },
+  // Qoder/Qwen streams can use a summary wrapper for hidden reasoning. The
+  // opener may arrive in reasoning_content while the closer arrives in
+  // delta.content, so the closer must also be treated as an orphan boundary.
+  { open: "<summary>", close: "</summary>" },
 ];
 
 function getTrailingPossibleTagPrefixLength(text: string, tag: string): number {

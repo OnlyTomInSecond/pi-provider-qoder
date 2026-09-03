@@ -120,6 +120,17 @@ describe("ThinkingTagParser", () => {
     expect(output.content[0]).toMatchObject({ type: "thinking", thinking: "pondering" });
   });
 
+  it("handles <summary> tags used by Qoder reasoning streams", () => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk("<summary>hidden reasoning</summary> visible answer");
+    parser.finalize();
+
+    expect(output.content).toEqual([
+      { type: "thinking", thinking: "hidden reasoning" },
+      { type: "text", text: " visible answer" },
+    ]);
+  });
+
   // ── Chunked streaming ─────────────────────────────────────────────────
 
   it("handles thinking content split across multiple chunks", () => {
@@ -336,6 +347,16 @@ describe("ThinkingTagParser", () => {
     expect(text).not.toContain("</reasoning>");
   });
 
+  it("drops an orphan <summary> closer from the content channel", () => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk("</summary>\n\nanswer");
+    parser.finalize();
+
+    const text = (output.content.find((c) => c.type === "text") as { type: string; text: string })?.text ?? "";
+    expect(text).toBe("answer");
+    expect(text).not.toContain("</summary>");
+  });
+
   it("emits text before an orphan closer, then drops the closer", () => {
     const parser = new ThinkingTagParser(output, stream);
     parser.processChunk("intro</thinking>\n\noutro");
@@ -352,6 +373,7 @@ describe("ThinkingTagParser", () => {
   it("stripThinkingTags removes opening and closing tag variants", () => {
     expect(stripThinkingTags("<thinking>hello</thinking>")).toBe("hello");
     expect(stripThinkingTags("<reasoning>deep</reasoning>")).toBe("deep");
+    expect(stripThinkingTags("<summary>hidden</summary>")).toBe("hidden");
     expect(stripThinkingTags("plain text")).toBe("plain text");
     expect(stripThinkingTags("<thinking>")).toBe("");
     expect(stripThinkingTags("</thinking>")).toBe("");
