@@ -192,26 +192,33 @@ export class DsmlToolCallParser {
   }
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Header patterns are rebuilt on every chunk that contains a DSML tool call or
+// parameter. Precompile them once per marker token at module load.
+const CALL_HEADER_PATTERNS = DSML_TOKENS.map(
+  (token) => new RegExp(`^<${escapeRegExp(token)}(invoke|function)\\s+name="([^"]*)">$`),
+);
+const PARAMETER_HEADER_PATTERNS = DSML_TOKENS.map(
+  (token) => new RegExp(`^<${escapeRegExp(token)}parameter\\s+name="([^"]+)"\\s+string="(true|false)">$`),
+);
+
 function parseCallHeader(header: string): { token: string; kind: "invoke" | "function"; name: string } | undefined {
-  for (const token of DSML_TOKENS) {
-    const match = header.match(new RegExp(`^<${escapeRegExp(token)}(invoke|function)\\s+name="([^"]*)">$`));
-    if (match) return { token, kind: match[1] as "invoke" | "function", name: match[2] };
+  for (let index = 0; index < DSML_TOKENS.length; index++) {
+    const match = CALL_HEADER_PATTERNS[index].exec(header);
+    if (match) return { token: DSML_TOKENS[index], kind: match[1] as "invoke" | "function", name: match[2] };
   }
   return undefined;
 }
 
 function parseParameterHeader(header: string): { token: string; name: string; isString: boolean } | undefined {
-  for (const token of DSML_TOKENS) {
-    const match = header.match(
-      new RegExp(`^<${escapeRegExp(token)}parameter\\s+name="([^"]+)"\\s+string="(true|false)">$`),
-    );
-    if (match) return { token, name: match[1], isString: match[2] === "true" };
+  for (let index = 0; index < DSML_TOKENS.length; index++) {
+    const match = PARAMETER_HEADER_PATTERNS[index].exec(header);
+    if (match) return { token: DSML_TOKENS[index], name: match[1], isString: match[2] === "true" };
   }
   return undefined;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function encodeParameterValue(value: string, isString: boolean): string | undefined {
