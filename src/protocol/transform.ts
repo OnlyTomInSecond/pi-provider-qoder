@@ -36,6 +36,14 @@ interface QoderMessage {
   content: QoderContent | null;
   tool_calls?: QoderToolCall[];
   tool_call_id?: string;
+  /**
+   * Prior-turn reasoning, sent as a top-level field exactly like the official
+   * qodercli does (`reasoning_content` on the assistant message). Never inline
+   * thinking as `<thinking>…</thinking>` text inside `content` — upstream
+   * reasoning models mis-parse that in multi-turn history and can degenerate
+   * into empty "reasoning-only" turns (#8838-class failures).
+   */
+  reasoning_content?: string;
 }
 
 export function contentToText(content: unknown, separator = ""): string {
@@ -165,6 +173,7 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
     } else if (msg.role === "assistant") {
       const am = msg as AssistantMessage;
       let content = "";
+      let reasoningContent = "";
       const toolCalls: QoderToolCall[] = [];
 
       if (Array.isArray(am.content)) {
@@ -172,8 +181,12 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
           if (block.type === "text") {
             content += (block as TextContent).text;
           } else if (block.type === "thinking") {
-            // Include thinking tags if reasoning is on
-            content += `<thinking>${(block as ThinkingContent).thinking}</thinking>\n\n`;
+            // The official qodercli sends prior reasoning as a top-level
+            // `reasoning_content` field and keeps the text content free of
+            // inline `<thinking>` wrappers. Mirror that: inlining the tags can
+            // make upstream reasoning models degenerate into empty
+            // "reasoning-only" turns on later calls.
+            reasoningContent += (block as ThinkingContent).thinking;
           } else if (block.type === "toolCall") {
             const tc = block as ToolCall;
             toolCalls.push({
@@ -201,6 +214,9 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
       };
       if (toolCalls.length > 0) {
         mapped.tool_calls = toolCalls;
+      }
+      if (reasoningContent) {
+        mapped.reasoning_content = reasoningContent;
       }
       normalizedMessages.push(mapped);
     } else if (msg.role === "toolResult") {

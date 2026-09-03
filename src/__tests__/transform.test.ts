@@ -202,8 +202,22 @@ describe("transformMessagesForQoder", () => {
       },
     ] as unknown as Message[];
     const result = transformMessagesForQoder(msgs);
-    expect(result[0].content).toContain("<thinking>let me think</thinking>");
-    expect(result[0].content).toContain("answer");
+    // Prior reasoning goes out as the top-level reasoning_content field (like
+    // the official qodercli), never inlined as <thinking> tags in content.
+    expect(result[0].content).toBe("answer");
+    expect(result[0].content).not.toContain("<thinking>");
+    expect(result[0]).toMatchObject({ reasoning_content: "let me think" });
+  });
+
+  it("omits reasoning_content when the assistant turn has no thinking", () => {
+    const msgs = [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "plain answer" }],
+      },
+    ] as unknown as Message[];
+    const result = transformMessagesForQoder(msgs);
+    expect(result[0]).toEqual({ role: "assistant", content: "plain answer" });
   });
 
   it("handles toolResult messages", () => {
