@@ -525,7 +525,7 @@ for (const model of staticModels) {
 }
 
 /** pi thinking levels in display order (matches the pi-ai SDK this build targets). */
-const PI_THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
+const PI_THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 /**
  * Map Qoder's `thinking_config` to pi's `thinkingLevelMap` so the TUI exposes
