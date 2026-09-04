@@ -225,4 +225,57 @@ describe("Qoder model cache", () => {
     const cache = JSON.parse(readFileSync(CACHE_PATHS.global, "utf8"));
     expect(cache.models[0].contextWindow).toBe(200000);
   });
+
+  it("maps Qoder max effort while keeping the largest context as default", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            chat: [
+              {
+                key: "dfmodel",
+                enable: true,
+                display_name: "DeepSeek V4 Flash",
+                context_config: {
+                  "200K": { token_count: 200000 },
+                  "400K": { token_count: 400000 },
+                  "1M": { token_count: 1000000, is_default: true },
+                },
+                is_reasoning: true,
+                thinking_config: {
+                  disabled: {},
+                  enabled: {
+                    efforts: {
+                      low: {},
+                      medium: {},
+                      high: {},
+                      max: {},
+                    },
+                  },
+                },
+              },
+            ],
+          }),
+      }),
+    );
+
+    await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
+
+    const model = getCachedModels("global")[0];
+    expect(model.contextWindow).toBe(1_000_000);
+    expect(model.thinkingLevelMap).toMatchObject({
+      off: "disabled",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      max: "max",
+    });
+
+    const config = getCachedModelConfig("DeepSeekV4Flash", "global");
+    expect(config?.context_config?.["200K"]?.is_default).toBe(false);
+    expect(config?.context_config?.["400K"]?.is_default).toBe(false);
+    expect(config?.context_config?.["1M"]?.is_default).toBe(true);
+  });
 });
