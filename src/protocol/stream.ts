@@ -286,9 +286,10 @@ export function streamQoder(
       const bodyBytes = Buffer.from(JSON.stringify(reqBody));
       throwIfAborted();
       await yieldToEventLoop();
-      const encodedBody = await qoderEncodeBodyAsync(bodyBytes);
+      // qoderEncodeBodyAsync writes the transformed body straight into a
+      // preallocated Buffer, yielding to the event loop on large requests.
+      const encodedBytes = await qoderEncodeBodyAsync(bodyBytes);
       throwIfAborted();
-      const encodedBytes = Buffer.from(encodedBody, "utf8");
 
       const chatURL = getQoderChatURL(providerMode);
 
@@ -327,7 +328,9 @@ export function streamQoder(
           "X-Model-Source": modelSource,
           ...headers,
         },
-        body: encodedBytes,
+        // Buffer<ArrayBufferLike> is not part of the DOM BodyInit union, but it
+        // is a valid Uint8Array at runtime; cast across the nominal gap.
+        body: encodedBytes as unknown as BodyInit,
         signal: requestController.signal,
       });
       resetIdleTimer();
