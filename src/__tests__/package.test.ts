@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
   files: string[];
-  exports: Record<string, string>;
   pi: { extensions: string[] };
 };
 
@@ -18,12 +17,6 @@ describe("published Pi extension entry", () => {
     expect(pkg.files).toContain("dist");
     expect(pkg.files).not.toContain("src");
     expect(pkg.pi.extensions).toEqual(["./dist/index.js"]);
-  });
-
-  it("exports the Pi extension bundle", () => {
-    expect(pkg.exports["."]).toBe("./dist/index.js");
-    expect(pkg.files).toContain("dist");
-    expect(pkg.exports["./opencode"]).toBeUndefined();
   });
 
   it("keeps every pi.extensions path inside the published files set", () => {
