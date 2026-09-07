@@ -1,18 +1,11 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { buildAuthHeaders } from "./cosy.js";
-import { parseQoderPriceFactor } from "./protocol/usage.js";
 import { getQoderBaseUrl, getQoderModelListURL, getQoderRegionConfig, type QoderMode } from "./region.js";
 
 export const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-
-/**
- * Qoder's price_factor is a relative Credit multiplier, not a USD token rate.
- * Keep pi-ai's monetary cost at zero/unknown and expose the multiplier
- * separately on QoderModelDef.
- */
 
 /**
  * Maximum output tokens sent per request. Aliyun Model Studio (the upstream
@@ -51,11 +44,6 @@ export interface QoderModelEntry {
     enabled?: { efforts?: Record<string, { is_default?: boolean }>; is_default?: boolean };
   };
   source?: string;
-  price_factor?: number;
-  original_price_factor?: number;
-  // Accept camelCase from compatibility fixtures without making it canonical.
-  priceFactor?: number;
-  originalPriceFactor?: number;
   [key: string]: unknown;
 }
 
@@ -71,66 +59,59 @@ export interface QoderModelDef {
   thinkingLevelMap?: ThinkingLevelMap;
   input: ("text" | "image")[];
   cost: typeof ZERO_COST;
-  /** Relative Qoder Credit multiplier from the server model catalog. */
-  priceFactor?: number;
-  /** Original multiplier before a promotion, when supplied by Qoder. */
-  originalPriceFactor?: number;
   contextWindow: number;
   maxTokens: number;
   description?: string;
 }
 
-interface QoderModelCacheData {
+function getHomeDir(): string {
+  // Prefer process.env.HOME so vitest setup can isolate caches. Node 26+ caches
+  // os.homedir() from process start, ignoring later HOME changes.
+  return process.env.HOME || process.env.USERPROFILE || homedir();
+}
+
+function getQoderCachePath(mode: QoderMode): string {
+  return join(getHomeDir(), ".pi", "agent", getQoderRegionConfig(mode).modelCacheFile);
+}
+
+interface ParsedModelCache {
   updatedAt?: number;
   models?: QoderModelDef[];
   configs?: Record<string, QoderModelEntry>;
 }
 
-interface LoadedQoderModelCache {
-  signature: string;
-  data: QoderModelCacheData;
+/** In-memory cache keyed by absolute cache path (HOME-safe across tests). */
+const modelCacheMem = new Map<string, ParsedModelCache | null>();
+
+/** Clear process-memory model caches (also used by tests that mutate cache files). */
+export function clearQoderModelsMemCache(): void {
+  modelCacheMem.clear();
 }
 
-const modelCacheMemory = new Map<QoderMode, LoadedQoderModelCache>();
-
-function getModelCacheSignature(cachePath: string): string | null {
-  try {
-    const stat = statSync(cachePath);
-    return `${stat.mtimeMs}:${stat.size}`;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Read and parse the model cache at most once per file version. The stat call
- * is intentionally much cheaper than reading and parsing the cache on every
- * request, while still noticing login/catalog updates made by another pi
- * process and direct file changes during tests.
- */
-function loadModelCache(mode: QoderMode): QoderModelCacheData | null {
+function readParsedModelCache(mode: QoderMode): ParsedModelCache | null {
   const cachePath = getQoderCachePath(mode);
-  const signature = getModelCacheSignature(cachePath);
-  const cached = modelCacheMemory.get(mode);
-  if (signature && cached?.signature === signature) return cached.data;
-  if (!signature) {
-    modelCacheMemory.delete(mode);
+  if (modelCacheMem.has(cachePath)) {
+    return modelCacheMem.get(cachePath) ?? null;
+  }
+  if (!existsSync(cachePath)) {
+    modelCacheMem.set(cachePath, null);
     return null;
   }
-
   try {
-    const data = JSON.parse(readFileSync(cachePath, "utf8")) as QoderModelCacheData;
-    if (!data || typeof data !== "object") return null;
-    modelCacheMemory.set(mode, { signature, data });
+    const data = JSON.parse(readFileSync(cachePath, "utf8")) as ParsedModelCache;
+    modelCacheMem.set(cachePath, data);
     return data;
   } catch {
-    modelCacheMemory.delete(mode);
+    modelCacheMem.set(cachePath, null);
     return null;
   }
 }
 
-function getQoderCachePath(mode: QoderMode): string {
-  return join(homedir(), ".pi", "agent", getQoderRegionConfig(mode).modelCacheFile);
+function writeParsedModelCache(mode: QoderMode, data: ParsedModelCache): void {
+  const cachePath = getQoderCachePath(mode);
+  mkdirSync(dirname(cachePath), { recursive: true });
+  writeFileSync(cachePath, JSON.stringify(data, null, 2), "utf-8");
+  modelCacheMem.set(cachePath, data);
 }
 
 /**
@@ -498,34 +479,8 @@ export const staticCnModels: QoderModelDef[] = [
   },
 ];
 
-/**
- * Offline fallback rates from Qoder's documented model selector. These are
- * relative multipliers, not fixed per-request Credits; an authenticated live
- * catalog always overrides them.
- */
-const DOCUMENTED_PRICE_FACTORS: Record<string, number> = {
-  auto: 1.0,
-  ultimate: 1.6,
-  performance: 1.1,
-  efficient: 0.3,
-  qmodel_preview: 0.5,
-  qmodel_latest: 0.5,
-  qmodel: 0.1,
-  kmodel_latest: 0.8,
-  kmodel: 0.3,
-  gm51model: 0.6,
-  dmodel: 0.8,
-  dfmodel: 0.3,
-  mmodel: 0.2,
-};
-
-for (const model of staticModels) {
-  const priceFactor = model.upstreamKey ? DOCUMENTED_PRICE_FACTORS[model.upstreamKey] : undefined;
-  if (priceFactor !== undefined) model.priceFactor = priceFactor;
-}
-
 /** pi thinking levels in display order (matches the pi-ai SDK this build targets). */
-const PI_THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+const PI_THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 
 /**
  * Map Qoder's `thinking_config` to pi's `thinkingLevelMap` so the TUI exposes
@@ -571,10 +526,10 @@ function buildThinkingLevelMap(entry: QoderModelEntry): ThinkingLevelMap | undef
 }
 
 export function getCachedModels(mode: QoderMode): QoderModelDef[] {
-  const data = loadModelCache(mode);
+  const data = readParsedModelCache(mode);
   if (data && Array.isArray(data.models)) {
     const models = data.models.map((model: QoderModelDef) => {
-      const config = data.configs?.[model.id];
+      const config = data.configs?.[model.id] as QoderModelEntry | undefined;
       const display = config?.display_name;
       const staticModel = (mode === "cn" ? staticCnModels : staticModels).find((seed) => seed.upstreamKey === model.id);
       if (display) return { ...model, id: toQoderModelId(display), name: display };
@@ -592,9 +547,9 @@ export function getCachedModels(mode: QoderMode): QoderModelDef[] {
 }
 
 export function getCachedModelConfig(modelId: string, mode: QoderMode): QoderModelEntry | null {
-  const data = loadModelCache(mode);
+  const data = readParsedModelCache(mode);
   if (data) {
-    const direct = data.configs?.[modelId];
+    const direct = data.configs?.[modelId] as QoderModelEntry | undefined;
     if (direct && toQoderModelId(direct.display_name) === modelId) {
       return withMaxContextAsDefault(direct);
     }
@@ -658,7 +613,7 @@ function withMaxContextAsDefault(entry: QoderModelEntry): QoderModelEntry {
 }
 
 export function isCacheStale(mode: QoderMode): boolean {
-  const data = loadModelCache(mode);
+  const data = readParsedModelCache(mode);
   if (!data || typeof data.updatedAt !== "number") return true;
   // Stale if older than 1 hour
   return Date.now() - data.updatedAt > 3600_000;
@@ -732,8 +687,6 @@ export async function updateQoderModelsCache(
         thinkingLevelMap,
         input: isVL ? ["text", "image"] : ["text"],
         cost: ZERO_COST,
-        priceFactor: parseQoderPriceFactor(entry.price_factor ?? entry.priceFactor),
-        originalPriceFactor: parseQoderPriceFactor(entry.original_price_factor ?? entry.originalPriceFactor),
         contextWindow: ctxLen,
         maxTokens: MAX_OUTPUT_TOKENS,
       });
@@ -747,9 +700,6 @@ export async function updateQoderModelsCache(
       configs,
     };
 
-    const cachePath = getQoderCachePath(mode);
-    mkdirSync(dirname(cachePath), { recursive: true });
-    writeFileSync(cachePath, JSON.stringify(cacheData, null, 2), "utf-8");
-    modelCacheMemory.delete(mode);
+    writeParsedModelCache(mode, cacheData);
   } catch {}
 }
