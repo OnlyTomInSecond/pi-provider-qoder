@@ -1,7 +1,7 @@
 {
   "name": "pi-provider-qoder",
-  "version": "0.4.1",
-  "description": "Pi extension for Qoder AI \u2014 with OAuth authentication, COSY signatures and WAF bypass",
+  "version": "0.4.4",
+  "description": "Pi extension for Qoder AI — with OAuth authentication, COSY signatures and WAF bypass",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
@@ -18,12 +18,8 @@
     "dist",
     "README.md"
   ],
-  "exports": {
-    ".": "./dist/index.js"
-  },
   "scripts": {
-    "build:pi": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-ai/compat",
-    "build": "npm run build:pi",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-ai/compat",
     "check": "node node_modules/typescript/bin/tsc --noEmit",
     "lint": "node node_modules/@biomejs/biome/bin/biome check .",
     "lint:fix": "node node_modules/@biomejs/biome/bin/biome check --write .",
@@ -40,9 +36,9 @@
     ]
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.2",
-    "@earendil-works/pi-ai": "^0.84.4",
-    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@biomejs/biome": "2.5.12",
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
     "esbuild": "^0.28.1",
     "tsx": "^4.23.13",
     "typescript": "^5.7.0",
