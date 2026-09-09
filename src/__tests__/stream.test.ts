@@ -744,6 +744,33 @@ describe("streamQoder", () => {
     expect(done.message.stopReason).toBe("toolUse");
   });
 
+  it("parses DSML tool markup leaked through reasoning_content", async () => {
+    // Some Qoder models dump the whole tool call into the reasoning_content
+    // channel. It must become a real tool call, not literal tags inside the
+    // thinking block (and any real reasoning ahead of it still shows up).
+    const thought = "I should list the files.";
+    const dsml =
+      `<｜DSML｜tool_calls>\n<｜DSML｜invoke name="bash">\n` +
+      `<｜DSML｜parameter name="command" string="true">ls</｜DSML｜parameter>\n` +
+      `</｜DSML｜invoke>\n</｜DSML｜tool_calls>`;
+    const split = Math.floor(dsml.length / 2);
+    const sse =
+      sseEnvelope(chunk({ reasoning_content: `${thought}\n\n${dsml.slice(0, split)}` })) +
+      sseEnvelope(chunk({ reasoning_content: dsml.slice(split) })) +
+      sseEnvelope(finishChunk("tool_calls")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake", reasoning: "high" }));
+    const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+
+    expect(done.message.content).toEqual([
+      { type: "thinking", thinking: `${thought}\n\n` },
+      { type: "toolCall", id: "dsml_call_0", name: "bash", arguments: { command: "ls" } },
+    ]);
+    expect(done.message.stopReason).toBe("toolUse");
+  });
+
   it("flushes content thinking before a DSML tool call", async () => {
     const dsml =
       `<｜DSML｜tool_calls>\n<｜DSML｜invoke name="bash">\n` +
