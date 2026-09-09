@@ -100,16 +100,25 @@ async function refreshQoderModelsCache(mode: QoderMode, accessToken?: string): P
 export default async function (pi: ExtensionAPI) {
   await registerQoderApi();
 
-  for (const mode of QODER_MODES) {
-    const providerID = getQoderRegionConfig(mode).providerID;
-    try {
-      await autoLoginQoderFromEnvironment(providerID, mode);
-      await refreshQoderModelsCache(mode);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[pi-provider-qoder] Automatic login failed for ${providerID}: ${message}`);
-    }
-  }
+  // Global and CN are independent (separate PAT env vars, cache files, base
+  // URLs), so initialize them concurrently to cut startup time in half instead
+  // of chaining their network round-trips sequentially. Each mode keeps its own
+  // failure boundary so one bad region cannot block the other. They share
+  // auth.json but write different providerID keys via the fully-synchronous
+  // saveCredentialsToAuthFile (no await inside), so the writes cannot
+  // interleave and there is no lost-update risk.
+  await Promise.all(
+    QODER_MODES.map(async (mode) => {
+      const providerID = getQoderRegionConfig(mode).providerID;
+      try {
+        await autoLoginQoderFromEnvironment(providerID, mode);
+        await refreshQoderModelsCache(mode);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[pi-provider-qoder] Automatic login failed for ${providerID}: ${message}`);
+      }
+    }),
+  );
 
   // Refresh once per session at startup if the cache is missing or stale,
   // rather than on every message in the stream hot path.
