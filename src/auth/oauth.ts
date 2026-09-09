@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
-import { updateQoderModelsCache } from "../catalog.js";
+import { isCacheStale, updateQoderModelsCache } from "../catalog.js";
 import { getMachineId } from "../cosy.js";
 import { getQoderRefreshURL, getQoderRegionConfig, type QoderMode } from "../region.js";
 import { interactiveLogin } from "./login.js";
@@ -119,9 +119,17 @@ export async function autoLoginQoderFromEnvironment(providerID: string, mode: Qo
   }
 
   const qCreds = credentials as QoderCredentials;
-  // Wait for the model cache before the provider is registered. This matters
-  // for `pi --list-models`, which can exit before background work completes.
-  await updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode);
+
+  // Refresh the model catalog before the provider is registered only when the
+  // cached list is stale (>1h), mirroring refreshQoderModelsCache. The PAT
+  // exchange above is authoritative for *identity* and always runs, but the
+  // model list changes rarely and the cache is not account-keyed within its
+  // TTL, so a fresh cache is reused instead of re-fetched on every boot.
+  // (Blocking matters for `pi --list-models`, which can exit before background
+  // work completes — so the stale fetch is awaited, not fired-and-forgotten.)
+  if (isCacheStale(mode)) {
+    await updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode);
+  }
 }
 
 /**
