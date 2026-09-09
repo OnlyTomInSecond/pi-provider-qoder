@@ -390,9 +390,43 @@ export function streamQoder(
         });
       };
 
-      const processDsmlEvent = (event: DsmlParserEvent): void => {
+      const appendApiThinking = (chunk: string): void => {
+        // Qoder's backend sometimes routes a literal `<thinking>` opener into
+        // reasoning_content (with the matching `</thinking>` closer landing in
+        // the content stream). Strip tag artifacts so the thinking block stays
+        // clean, matching the SDK's ContentBlock model.
+        const cleaned = stripThinkingTags(chunk);
+        if (!cleaned) return;
+        if (thinkingBlockIndex === -1) {
+          thinkingParser?.flushAtBoundary();
+          thinkingBlockIndex = output.content.length;
+          output.content.push({ type: "thinking", thinking: "" });
+          pushEvent({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
+        }
+        const block = output.content[thinkingBlockIndex] as ThinkingContent;
+        block.thinking += cleaned;
+        pushEvent({
+          type: "thinking_delta",
+          contentIndex: thinkingBlockIndex,
+          delta: cleaned,
+          partial: output,
+        });
+      };
+
+      // DSML tool markup can be leaked through EITHER the reasoning_content or
+      // the content channel. Feed both through the one parser so a wrapper that
+      // splits across the two channels still reassembles and ids stay unique,
+      // tagging every emitted text event with the channel it arrived on:
+      // reasoning text lands in the API thinking block, content text in the
+      // regular text sink. Tool events are channel-agnostic and always become
+      // tool calls (never shown as tags).
+      const processDsmlEvent = (event: DsmlParserEvent, fromReasoning: boolean): void => {
         if (event.type === "text") {
-          processTextChunk(event.text);
+          if (fromReasoning) {
+            appendApiThinking(event.text);
+          } else {
+            processTextChunk(event.text);
+          }
           return;
         }
 
@@ -406,8 +440,8 @@ export function streamQoder(
         toolCalls.appendDsmlArguments(event.id, event.arguments);
       };
 
-      const processDsmlChunk = (content: string): void => {
-        for (const event of dsmlParser.processChunk(content)) processDsmlEvent(event);
+      const processDsmlChunk = (content: string, fromReasoning: boolean): void => {
+        for (const event of dsmlParser.processChunk(content)) processDsmlEvent(event, fromReasoning);
       };
 
       pushEvent({ type: "start", partial: output });
@@ -518,30 +552,14 @@ export function streamQoder(
               const delta = choice.delta;
 
               if (delta) {
-                // 1. Process reasoning/thinking content (API reasoning)
+                // 1. Process reasoning/thinking content (API reasoning). DSML
+                // tool calls are also sometimes leaked through this channel, so
+                // route it through the DSML parser too: non-DSML reasoning text
+                // becomes a thinking block, while any embedded tool call is
+                // extracted and replayed as a real tool call instead of showing
+                // up as literal tags inside the thinking.
                 if (delta.reasoning_content) {
-                  // Qoder's backend sometimes routes a literal `<thinking>`
-                  // opener into reasoning_content (with the matching
-                  // `</thinking>` closer landing in the content stream). Strip
-                  // tag artifacts so the thinking block stays clean, matching
-                  // the SDK's ContentBlock model.
-                  const reasoningChunk = stripThinkingTags(delta.reasoning_content);
-                  if (reasoningChunk) {
-                    if (thinkingBlockIndex === -1) {
-                      thinkingParser?.flushAtBoundary();
-                      thinkingBlockIndex = output.content.length;
-                      output.content.push({ type: "thinking", thinking: "" });
-                      pushEvent({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
-                    }
-                    const block = output.content[thinkingBlockIndex] as ThinkingContent;
-                    block.thinking += reasoningChunk;
-                    pushEvent({
-                      type: "thinking_delta",
-                      contentIndex: thinkingBlockIndex,
-                      delta: reasoningChunk,
-                      partial: output,
-                    });
-                  }
+                  processDsmlChunk(delta.reasoning_content, true);
                 }
 
                 // 2. Process text content. DSML tool calls may be embedded in
@@ -550,7 +568,7 @@ export function streamQoder(
                   // End API thinking block if active before switching to text or
                   // a tool call embedded in the content stream.
                   endApiThinking();
-                  processDsmlChunk(delta.content);
+                  processDsmlChunk(delta.content, false);
                 }
                 // 3. Process native structured tool calls.
                 if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
@@ -583,7 +601,7 @@ export function streamQoder(
       // idle timeouts, and external aborts all release the connection.
 
       // Flush any text or DSML markup split across the final content delta.
-      for (const event of dsmlParser.finalize()) processDsmlEvent(event);
+      for (const event of dsmlParser.finalize()) processDsmlEvent(event, false);
 
       if (thinkingParser) {
         thinkingParser.finalize();
