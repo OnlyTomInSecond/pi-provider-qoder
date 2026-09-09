@@ -221,4 +221,44 @@ describe("Qoder model cache", () => {
     expect(getCachedModelConfig("Lite", "global")?.key).toBe("lite");
     expect(getCachedModels("global").map((m) => m.id)).toEqual(["Lite"]);
   });
+
+  it("resolves config by friendly id from a legacy raw-key cache shape", () => {
+    // Older cache files keyed configs by the upstream key (e.g. `lite`) and
+    // carried the display name inside each entry. The displayId index must fold
+    // these in so requests resolve the config in O(1) without a full scan, and
+    // still must not expose the raw upstream key as a public model id.
+    writeFileSync(
+      CACHE_PATHS.global,
+      JSON.stringify({
+        updatedAt: Date.now(),
+        models: [{ id: "Lite", name: "Lite" }],
+        configs: { lite: { key: "lite", display_name: "Lite", enable: true } },
+      }),
+      "utf8",
+    );
+    clearQoderModelsMemCache();
+
+    expect(getCachedModelConfig("Lite", "global")?.key).toBe("lite");
+    expect(getCachedModelConfig("lite", "global")).toBeNull();
+  });
+
+  it("coalesces concurrent model-list refreshes into a single request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          chat: [{ key: "lite", enable: true, display_name: "Lite" }],
+        }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // auto-login, session_start and a token refresh can all fire at startup.
+    await Promise.all([
+      updateQoderModelsCache("token-a", "user", "Name", "e@q.com", "global"),
+      updateQoderModelsCache("token-b", "user", "Name", "e@q.com", "global"),
+      updateQoderModelsCache("token-c", "user", "Name", "e@q.com", "global"),
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
