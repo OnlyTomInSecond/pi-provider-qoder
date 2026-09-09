@@ -83,9 +83,26 @@ interface ParsedModelCache {
 /** In-memory cache keyed by absolute cache path (HOME-safe across tests). */
 const modelCacheMem = new Map<string, ParsedModelCache | null>();
 
+/**
+ * In-memory displayId -> config index keyed by absolute cache path, so
+ * getCachedModelConfig resolves in O(1) instead of scanning every config entry
+ * on each request. Derived from the memoized cache and invalidated on write
+ * (writeParsedModelCache) or clear (clearQoderModelsMemCache).
+ */
+const configIndexMem = new Map<string, Map<string, QoderModelEntry>>();
+
+/**
+ * In-flight model-catalog fetches keyed by cache path (mode). Multiple callers
+ * within one process (auto-login, session_start, login, token refresh) can fire
+ * updateQoderModelsCache at roughly the same time; this coalesces them into a
+ * single network request instead of re-fetching the model list per caller.
+ */
+const inflightModelUpdates = new Map<string, Promise<void>>();
+
 /** Clear process-memory model caches (also used by tests that mutate cache files). */
 export function clearQoderModelsMemCache(): void {
   modelCacheMem.clear();
+  configIndexMem.clear();
 }
 
 function readParsedModelCache(mode: QoderMode): ParsedModelCache | null {
@@ -112,6 +129,8 @@ function writeParsedModelCache(mode: QoderMode, data: ParsedModelCache): void {
   mkdirSync(dirname(cachePath), { recursive: true });
   writeFileSync(cachePath, JSON.stringify(data, null, 2), "utf-8");
   modelCacheMem.set(cachePath, data);
+  // The configs changed, so any previously built displayId index is stale.
+  configIndexMem.delete(cachePath);
 }
 
 /**
@@ -546,23 +565,41 @@ export function getCachedModels(mode: QoderMode): QoderModelDef[] {
   return mode === "cn" ? staticCnModels : staticModels;
 }
 
-export function getCachedModelConfig(modelId: string, mode: QoderMode): QoderModelEntry | null {
-  const data = readParsedModelCache(mode);
-  if (data) {
-    const direct = data.configs?.[modelId] as QoderModelEntry | undefined;
-    if (direct && toQoderModelId(direct.display_name) === modelId) {
-      return withMaxContextAsDefault(direct);
-    }
+/**
+ * Build (once, then memoize) a map from pi model id (display-name-derived) to
+ * its catalog config. Both cache shapes are handled uniformly: the new cache
+ * already keys configs by the friendly id, while legacy caches key by the raw
+ * upstream key and carry the display name inside each entry. Only
+ * display-name-derived ids are indexed, so raw upstream keys (e.g. `lite`)
+ * never resolve to a public model id — matching the previous behavior. The
+ * index is derived from the memoized cache, so it keeps serving after the cache
+ * file is removed, and is dropped whenever the cache is rewritten or cleared.
+ */
+function getConfigIndex(mode: QoderMode): Map<string, QoderModelEntry> {
+  const cachePath = getQoderCachePath(mode);
+  const existing = configIndexMem.get(cachePath);
+  if (existing) return existing;
 
-    // Read old cache shapes without preserving their raw-key aliases.
-    const legacyEntry = Object.values(data.configs || {}).find(
-      (entry) =>
-        entry && typeof entry === "object" && toQoderModelId((entry as QoderModelEntry).display_name) === modelId,
-    ) as QoderModelEntry | undefined;
-    if (legacyEntry) {
-      return withMaxContextAsDefault(legacyEntry);
+  const index = new Map<string, QoderModelEntry>();
+  const configs = readParsedModelCache(mode)?.configs;
+  if (configs && typeof configs === "object") {
+    for (const entry of Object.values(configs)) {
+      if (!entry || typeof entry !== "object" || !entry.display_name) continue;
+      const displayId = toQoderModelId(entry.display_name);
+      if (displayId && displayId !== "QoderModel" && !index.has(displayId)) {
+        index.set(displayId, entry as QoderModelEntry);
+      }
     }
   }
+  configIndexMem.set(cachePath, index);
+  return index;
+}
+
+export function getCachedModelConfig(modelId: string, mode: QoderMode): QoderModelEntry | null {
+  // O(1) lookup against the memoized displayId index (no per-request scan of the
+  // whole config list, which could be hundreds of entries).
+  const config = getConfigIndex(mode).get(modelId);
+  if (config) return withMaxContextAsDefault(config);
 
   const staticModel = (mode === "cn" ? staticCnModels : staticModels).find((model) => model.id === modelId);
   if (staticModel) {
@@ -619,7 +656,36 @@ export function isCacheStale(mode: QoderMode): boolean {
   return Date.now() - data.updatedAt > 3600_000;
 }
 
+/**
+ * Refresh the model catalog for `mode` from the live /model/list endpoint.
+ * Concurrent calls for the same mode within one process are coalesced into a
+ * single network request (see inflightModelUpdates), so a startup auto-login,
+ * a session_start hook and a token refresh firing together only fetch once.
+ * Network errors are swallowed (returns normally) so callers stay best-effort.
+ */
 export async function updateQoderModelsCache(
+  authToken: string,
+  userID: string,
+  name: string,
+  email: string,
+  mode: QoderMode,
+): Promise<void> {
+  const cachePath = getQoderCachePath(mode);
+  const inflight = inflightModelUpdates.get(cachePath);
+  if (inflight) return inflight;
+
+  const promise = (async () => {
+    try {
+      await fetchAndCacheModelList(authToken, userID, name, email, mode);
+    } finally {
+      inflightModelUpdates.delete(cachePath);
+    }
+  })();
+  inflightModelUpdates.set(cachePath, promise);
+  return promise;
+}
+
+async function fetchAndCacheModelList(
   authToken: string,
   userID: string,
   name: string,
