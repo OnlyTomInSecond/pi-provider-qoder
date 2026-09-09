@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { buildAuthHeaders } from "../cosy.js";
+import { buildAuthHeaders, getMachineId } from "../cosy.js";
 
 describe("COSY client identity", () => {
   it("sends Cosy-Version and cosyVersion as current qodercli 1.1.38", () => {
@@ -54,5 +57,21 @@ describe("COSY client identity", () => {
     expect(headers["Cosy-Bodylength"]).toBe(String(body.length));
 
     vi.restoreAllMocks();
+  });
+
+  it("returns a stable, persisted machine id across calls", () => {
+    const first = getMachineId();
+    expect(first.length).toBeGreaterThan(0);
+
+    // Memoized after first resolution: reuse, never regenerate.
+    expect(getMachineId()).toBe(first);
+    expect(getMachineId()).toBe(first);
+
+    // The resolved id matches what was persisted under ~/.pi/agent.
+    const persisted = readFileSync(
+      join(process.env.HOME || process.env.USERPROFILE || homedir(), ".pi", "agent", "qoder-machine-id"),
+      "utf8",
+    ).trim();
+    expect(persisted).toBe(first);
   });
 });

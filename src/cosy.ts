@@ -80,14 +80,27 @@ function getHomeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || homedir();
 }
 
+/**
+ * Resolved machine id, keyed by the home dir it came from. The id only changes
+ * when its file is (re)created or $HOME changes, so once read it is memoized in
+ * process memory to keep per-request COSY header building off the fs read/write
+ * path. Keying by home keeps tests that relocate $HOME correctly isolated.
+ */
+let machineIdMem: { home: string; id: string } | null = null;
+
 export function getMachineId(): string {
   const home = getHomeDir();
+  if (machineIdMem && machineIdMem.home === home) return machineIdMem.id;
+
   const paths = [join(home, ".qoder", ".auth", "machine_id"), join(home, ".pi", "agent", "qoder-machine-id")];
   for (const p of paths) {
     if (existsSync(p)) {
       try {
         const val = readFileSync(p, "utf8").trim();
-        if (val) return val;
+        if (val) {
+          machineIdMem = { home, id: val };
+          return val;
+        }
       } catch {}
     }
   }
@@ -97,6 +110,7 @@ export function getMachineId(): string {
     mkdirSync(dirname(savePath), { recursive: true });
     writeFileSync(savePath, newId, "utf8");
   } catch {}
+  machineIdMem = { home, id: newId };
   return newId;
 }
 
