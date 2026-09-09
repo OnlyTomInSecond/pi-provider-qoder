@@ -9,7 +9,7 @@ import {
   getQoderPatForMode,
 } from "../auth/oauth.js";
 import { credentialsFromPat } from "../auth/pat.js";
-import { updateQoderModelsCache } from "../catalog.js";
+import { isCacheStale, updateQoderModelsCache } from "../catalog.js";
 import { loadLiveFixture } from "./live-fixture.js";
 
 const AUTH_FILE = join(process.env.HOME || process.env.USERPROFILE || homedir(), ".pi", "agent", "auth.json");
@@ -106,6 +106,18 @@ describe("oauth autoLoginQoderFromEnvironment", () => {
       "test@example.com",
       "global",
     );
+  });
+
+  it("skips the model catalog refresh when the cache is fresh", async () => {
+    process.env.QODER_PERSONAL_ACCESS_TOKEN = "pt-global-fresh";
+    vi.mocked(isCacheStale).mockReturnValueOnce(false);
+
+    await autoLoginQoderFromEnvironment("qoder-test-provider", "global");
+
+    // Identity exchange still happens (PAT is authoritative), but the model
+    // list is reused from the fresh cache instead of re-fetched.
+    expect(credentialsFromPat).toHaveBeenCalledWith("pt-global-fresh", "global");
+    expect(updateQoderModelsCache).not.toHaveBeenCalled();
   });
 
   it("passes a recorded-format identity into the model catalog refresh", async () => {
