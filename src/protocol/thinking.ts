@@ -95,6 +95,16 @@ export function stripThinkingTags(text: string): string {
 
 type Phase = "text" | "thinking";
 
+export interface ThinkingTagParserOptions {
+  /**
+   * When false the content stream is plain text: tag detection is skipped and
+   * every chunk is appended to the current text block. Used when the host
+   * explicitly disabled thinking, so `<thinking>` markup must not be routed
+   * into a thinking block.
+   */
+  parseTags?: boolean;
+}
+
 /**
  * Incremental parser for thinking tags carried in the content stream.
  *
@@ -114,14 +124,17 @@ export class ThinkingTagParser {
   private thinkingBlockIndex: number | null = null;
   private textBlockIndex: number | null = null;
   private lastTextBlockIndex: number | null = null;
+  private readonly parseTags: boolean;
   private readonly emitEvent: (event: AssistantMessageEvent) => void;
 
   constructor(
     private readonly output: AssistantMessage,
     stream: AssistantMessageEventStream,
     emitEvent?: (event: AssistantMessageEvent) => void,
+    options: ThinkingTagParserOptions = {},
   ) {
     this.emitEvent = emitEvent ?? ((event) => stream.push(event));
+    this.parseTags = options.parseTags ?? true;
   }
 
   getTextBlockIndex(): number | null {
@@ -140,6 +153,9 @@ export class ThinkingTagParser {
    * thinking content before the block is closed.
    */
   flushAtBoundary(): void {
+    // Plain-text mode never holds a buffer or enters a thinking phase, so a
+    // boundary must not split the current text block.
+    if (!this.parseTags) return;
     if (this.phase === "thinking") {
       this.closeThinking(true);
       return;
@@ -165,6 +181,13 @@ export class ThinkingTagParser {
 
   /** Consume as much of `buffer` as the current phase allows. */
   private scan(): void {
+    if (!this.parseTags) {
+      if (this.buffer) {
+        this.emitText(this.buffer);
+        this.buffer = "";
+      }
+      return;
+    }
     while (this.buffer) {
       if (this.phase === "text") {
         const tag = findEarliestTag(this.buffer);

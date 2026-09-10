@@ -8,7 +8,6 @@ import {
   createAssistantMessageEventStream,
   type Model,
   type SimpleStreamOptions,
-  type TextContent,
   type ThinkingContent,
 } from "@earendil-works/pi-ai";
 import { resolveQoderIdentity } from "../auth/oauth.js";
@@ -345,7 +344,6 @@ export function streamQoder(
       const decoder = new TextDecoder();
       let buffer = "";
 
-      let contentBlockIndex = -1;
       let thinkingBlockIndex = -1;
       const toolCalls = new ToolCallAccumulator(output, pushEvent);
 
@@ -354,7 +352,7 @@ export function streamQoder(
       // Older pi builds passed `false`/`"off"` before reasoning became a typed
       // ThinkingLevel option; keep tolerating those legacy values.
       const thinkingEnabled = isThinkingRequested(options?.reasoning);
-      const thinkingParser = thinkingEnabled ? new ThinkingTagParser(output, stream, pushEvent) : null;
+      const thinkingParser = new ThinkingTagParser(output, stream, pushEvent, { parseTags: thinkingEnabled });
       const dsmlParser = new DsmlToolCallParser();
 
       const endApiThinking = (): void => {
@@ -369,27 +367,6 @@ export function streamQoder(
         thinkingBlockIndex = -1;
       };
 
-      const processTextChunk = (text: string): void => {
-        if (!text) return;
-        if (thinkingParser) {
-          thinkingParser.processChunk(text);
-          return;
-        }
-        if (contentBlockIndex === -1) {
-          contentBlockIndex = output.content.length;
-          output.content.push({ type: "text", text: "" });
-          pushEvent({ type: "text_start", contentIndex: contentBlockIndex, partial: output });
-        }
-        const block = output.content[contentBlockIndex] as TextContent;
-        block.text += text;
-        pushEvent({
-          type: "text_delta",
-          contentIndex: contentBlockIndex,
-          delta: text,
-          partial: output,
-        });
-      };
-
       const appendApiThinking = (chunk: string): void => {
         // Qoder's backend sometimes routes a literal `<thinking>` opener into
         // reasoning_content (with the matching `</thinking>` closer landing in
@@ -398,7 +375,7 @@ export function streamQoder(
         const cleaned = stripThinkingTags(chunk);
         if (!cleaned) return;
         if (thinkingBlockIndex === -1) {
-          thinkingParser?.flushAtBoundary();
+          thinkingParser.flushAtBoundary();
           thinkingBlockIndex = output.content.length;
           output.content.push({ type: "thinking", thinking: "" });
           pushEvent({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
@@ -422,15 +399,12 @@ export function streamQoder(
       // tool calls (never shown as tags).
       const processDsmlEvent = (event: DsmlParserEvent, fromReasoning: boolean): void => {
         if (event.type === "text") {
-          if (fromReasoning) {
-            appendApiThinking(event.text);
-          } else {
-            processTextChunk(event.text);
-          }
+          if (fromReasoning) appendApiThinking(event.text);
+          else thinkingParser.processChunk(event.text);
           return;
         }
 
-        thinkingParser?.flushAtBoundary();
+        thinkingParser.flushAtBoundary();
         endApiThinking();
         if (event.type === "tool_start") {
           toolCalls.startDsmlCall(event.id, event.name);
@@ -600,10 +574,7 @@ export function streamQoder(
       // Flush any text or DSML markup split across the final content delta.
       for (const event of dsmlParser.finalize()) processDsmlEvent(event, false);
 
-      if (thinkingParser) {
-        thinkingParser.finalize();
-      }
-
+      thinkingParser.finalize();
       if (thinkingBlockIndex !== -1) {
         const block = output.content[thinkingBlockIndex] as ThinkingContent;
         pushEvent({
