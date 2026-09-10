@@ -49,6 +49,18 @@ describe("DsmlToolCallParser", () => {
     ]);
   });
 
+  it("passes ordinary chunks directly while retaining a split wrapper suffix", () => {
+    const parser = new DsmlToolCallParser();
+    expect(parser.processChunk("reasoning text without markers")).toEqual([
+      { type: "text", text: "reasoning text without markers" },
+    ]);
+
+    const split = new DsmlToolCallParser();
+    expect(split.processChunk("plain <｜DSML｜tool_call")).toEqual([{ type: "text", text: "plain " }]);
+    expect(split.processChunk("s>")).toEqual([]);
+    expect(split.finalize()).toEqual([{ type: "text", text: "<｜DSML｜tool_calls>" }]);
+  });
+
   it("keeps ordinary text and parses multiple function calls", () => {
     const input =
       `before ${START}\n` +

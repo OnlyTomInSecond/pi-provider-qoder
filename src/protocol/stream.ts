@@ -464,17 +464,14 @@ export function streamQoder(
           throw new Error(`Qoder SSE buffer exceeded ${MAX_SSE_BUFFER_LENGTH} characters without a complete line`);
         }
 
-        while (true) {
-          const lineEnd = buffer.indexOf("\n");
-          if (lineEnd === -1) {
-            if (buffer.length > MAX_SSE_BUFFER_LENGTH) {
-              throw new Error(`Qoder SSE buffer exceeded ${MAX_SSE_BUFFER_LENGTH} characters without a complete line`);
-            }
-            break;
-          }
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        if (buffer.length > MAX_SSE_BUFFER_LENGTH) {
+          throw new Error(`Qoder SSE buffer exceeded ${MAX_SSE_BUFFER_LENGTH} characters without a complete line`);
+        }
 
-          const line = buffer.substring(0, lineEnd).trim();
-          buffer = buffer.substring(lineEnd + 1);
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
 
           if (++linesSinceYield >= SSE_LINES_PER_YIELD) {
             linesSinceYield = 0;
