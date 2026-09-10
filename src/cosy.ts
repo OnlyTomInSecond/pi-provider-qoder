@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { getHomeDir } from "./home.js";
 
 const qoderRSAPublicKey = `-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDA8iMH5c02LilrsERw9t6Pv5Nc
@@ -74,10 +74,6 @@ function computeSigPath(urlStr: string): string {
     sigPath = sigPath.substring("/algo".length);
   }
   return sigPath;
-}
-
-function getHomeDir(): string {
-  return process.env.HOME || process.env.USERPROFILE || homedir();
 }
 
 /**
