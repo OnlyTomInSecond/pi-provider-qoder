@@ -32,8 +32,3 @@ export function parseQoderCreditsUsage(value: unknown): QoderCreditsUsage {
   if (typeof usage.billable === "boolean") result.billable = usage.billable;
   return result;
 }
-
-/** Parse a relative model Credit rate from Qoder's catalog entry. */
-export function parseQoderPriceFactor(value: unknown): number | undefined {
-  return nonNegativeFiniteNumber(value);
-}
