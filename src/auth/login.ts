@@ -50,7 +50,10 @@ export async function interactiveLogin(callbacks: OAuthLoginCallbacks, mode: Qod
   });
   if (getSignal(callbacks)?.aborted) throw new Error("Login cancelled");
   if (pat?.trim()) {
-    return patLogin(callbacks, pat.trim(), mode);
+    getProgress(callbacks)?.("Exchanging access token...");
+    const creds = await credentialsFromPat(pat.trim(), mode);
+    getProgress(callbacks)?.("Login successful!");
+    return creds;
   }
 
   if (!region.supportsBrowserLogin) {
@@ -61,35 +64,6 @@ export async function interactiveLogin(callbacks: OAuthLoginCallbacks, mode: Qod
 
   if (getSignal(callbacks)?.aborted) throw new Error("Login cancelled");
   return runDeviceFlow(callbacks);
-}
-
-/** Prompt for a PAT (if not provided) and exchange it for full credentials. */
-async function patLogin(
-  callbacks: OAuthLoginCallbacks,
-  providedPat: string | undefined,
-  mode: QoderMode,
-): Promise<OAuthCredentials> {
-  const region = getQoderRegionConfig(mode);
-  let pat = providedPat;
-  if (!pat) {
-    const prompt = getPrompt(callbacks);
-    const entered = await prompt({
-      message: !region.supportsBrowserLogin
-        ? "Paste your Qoder CN Personal Access Token"
-        : "Paste your Qoder Personal Access Token (pt-...)",
-      placeholder: "pt-...",
-      allowEmpty: false,
-    });
-    if (getSignal(callbacks)?.aborted) throw new Error("Login cancelled");
-    pat = entered?.trim();
-  }
-  if (!pat) {
-    throw new Error("No Personal Access Token provided");
-  }
-  getProgress(callbacks)?.("Exchanging access token...");
-  const creds = await credentialsFromPat(pat, mode);
-  getProgress(callbacks)?.("Login successful!");
-  return creds;
 }
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {

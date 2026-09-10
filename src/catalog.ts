@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { buildAuthHeaders } from "./cosy.js";
+import { getHomeDir } from "./home.js";
 import { getQoderBaseUrl, getQoderModelListURL, getQoderRegionConfig, type QoderMode } from "./region.js";
 
 export const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
@@ -62,12 +62,6 @@ export interface QoderModelDef {
   contextWindow: number;
   maxTokens: number;
   description?: string;
-}
-
-function getHomeDir(): string {
-  // Prefer process.env.HOME so vitest setup can isolate caches. Node 26+ caches
-  // os.homedir() from process start, ignoring later HOME changes.
-  return process.env.HOME || process.env.USERPROFILE || homedir();
 }
 
 function getQoderCachePath(mode: QoderMode): string {
@@ -141,362 +135,131 @@ export function toQoderModelId(displayName?: string): string {
   return (displayName || "QoderModel").replace(/\s+/g, "");
 }
 
-export const staticModels: QoderModelDef[] = [
-  {
-    id: "Auto",
-    upstreamKey: "auto",
-    name: "Auto",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: true,
-    supportsEffort: false,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "Ultimate",
-    upstreamKey: "ultimate",
-    name: "Ultimate",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: true,
-    supportsEffort: true,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "Performance",
-    upstreamKey: "performance",
-    name: "Performance",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: true,
-    supportsEffort: true,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "Efficient",
-    upstreamKey: "efficient",
-    name: "Efficient",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: false,
-    supportsEffort: false,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "Lite",
-    upstreamKey: "lite",
-    name: "Lite",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: false,
-    supportsEffort: false,
-    input: ["text"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "Qwen3.7Plus",
-    upstreamKey: "qmodel",
-    name: "Qwen3.7 Plus",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: false,
-    supportsEffort: false,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "Cantus",
-    upstreamKey: "cmodel",
-    name: "Cantus",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: true,
-    supportsEffort: true,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "Qwen3.8-Max",
-    upstreamKey: "qmodel_preview",
-    name: "Qwen3.8-Max",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: true,
-    supportsEffort: true,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "Qwen3.7-Max",
-    upstreamKey: "qmodel_latest",
-    name: "Qwen3.7-Max",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: false,
-    supportsEffort: false,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "DeepSeek-V4-Pro",
-    upstreamKey: "dmodel",
-    name: "DeepSeek-V4-Pro",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: true,
-    supportsEffort: true,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "DeepSeek-V4-Flash",
-    upstreamKey: "dfmodel",
-    name: "DeepSeek-V4-Flash",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: true,
-    supportsEffort: true,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "GLM-5.2",
-    upstreamKey: "gm51model",
-    name: "GLM-5.2",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: true,
-    supportsEffort: true,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "Kimi-K2.7-Code",
-    upstreamKey: "kmodel",
-    name: "Kimi-K2.7-Code",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: false,
-    supportsEffort: false,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    // Catalog advertises 256K; not included in the 1M live test in issue #13.
-    contextWindow: 256000,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "Kimi-K3",
-    upstreamKey: "kmodel_latest",
-    name: "Kimi-K3",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: false,
-    supportsEffort: false,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-  {
-    id: "MiniMax-M3",
-    upstreamKey: "mmodel",
-    name: "MiniMax-M3",
-    api: "qoder-api",
-    provider: "qoder",
-    baseUrl: getQoderBaseUrl("global"),
-    reasoning: false,
-    supportsEffort: false,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
-  },
-];
+/**
+ * Compact description of a fallback (static) catalog entry. The pi-visible id
+ * is always derived from `name` (whitespace stripped), matching live entries.
+ */
+interface StaticModelRow {
+  name: string;
+  upstreamKey: string;
+  reasoning: boolean;
+  /** The catalog advertises discrete effort levels for this model. */
+  supportsEffort?: boolean;
+  /** Vision-capable model (`is_vl`); adds the "image" input modality. */
+  vision?: boolean;
+  /** Defaults to DEFAULT_CONTEXT_WINDOW when omitted. */
+  contextWindow?: number;
+  description?: string;
+}
 
-export const staticCnModels: QoderModelDef[] = [
-  {
-    id: "Auto",
-    upstreamKey: "auto",
-    name: "Auto",
+function buildStaticModels(mode: QoderMode, rows: readonly StaticModelRow[]): QoderModelDef[] {
+  const region = getQoderRegionConfig(mode);
+  const baseUrl = getQoderBaseUrl(mode);
+  return rows.map((row) => ({
+    id: toQoderModelId(row.name),
+    upstreamKey: row.upstreamKey,
+    name: row.name,
     api: "qoder-api",
-    provider: "qoder-cn",
-    baseUrl: getQoderBaseUrl("cn"),
-    reasoning: true,
-    supportsEffort: false,
-    input: ["text", "image"],
+    provider: region.providerID,
+    baseUrl,
+    reasoning: row.reasoning,
+    supportsEffort: row.supportsEffort ?? false,
+    input: row.vision ? ["text", "image"] : ["text"],
     cost: ZERO_COST,
-    // CN Auto has not been live-tested at 1M; keep the conservative 200K
-    // fallback until the CN catalog advertises a larger option.
-    contextWindow: 200000,
+    contextWindow: row.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     maxTokens: MAX_OUTPUT_TOKENS,
+    ...(row.description ? { description: row.description } : {}),
+  }));
+}
+
+export const staticModels: QoderModelDef[] = buildStaticModels("global", [
+  { name: "Auto", upstreamKey: "auto", reasoning: true, vision: true },
+  { name: "Ultimate", upstreamKey: "ultimate", reasoning: true, supportsEffort: true, vision: true },
+  { name: "Performance", upstreamKey: "performance", reasoning: true, supportsEffort: true, vision: true },
+  { name: "Efficient", upstreamKey: "efficient", reasoning: false, vision: true },
+  { name: "Lite", upstreamKey: "lite", reasoning: false },
+  { name: "Qwen3.7 Plus", upstreamKey: "qmodel", reasoning: false, vision: true },
+  { name: "Cantus", upstreamKey: "cmodel", reasoning: true, supportsEffort: true, vision: true },
+  { name: "Qwen3.8-Max", upstreamKey: "qmodel_preview", reasoning: true, supportsEffort: true, vision: true },
+  { name: "Qwen3.7-Max", upstreamKey: "qmodel_latest", reasoning: false, vision: true },
+  { name: "DeepSeek-V4-Pro", upstreamKey: "dmodel", reasoning: true, supportsEffort: true, vision: true },
+  { name: "DeepSeek-V4-Flash", upstreamKey: "dfmodel", reasoning: true, supportsEffort: true, vision: true },
+  { name: "GLM-5.2", upstreamKey: "gm51model", reasoning: true, supportsEffort: true, vision: true },
+  // Catalog advertises 256K; not included in the 1M live test in issue #13.
+  { name: "Kimi-K2.7-Code", upstreamKey: "kmodel", reasoning: false, vision: true, contextWindow: 256000 },
+  { name: "Kimi-K3", upstreamKey: "kmodel_latest", reasoning: false, vision: true },
+  { name: "MiniMax-M3", upstreamKey: "mmodel", reasoning: false, vision: true },
+]);
+
+export const staticCnModels: QoderModelDef[] = buildStaticModels("cn", [
+  // CN Auto has not been live-tested at 1M; keep the conservative 200K
+  // fallback until the CN catalog advertises a larger option.
+  {
+    name: "Auto",
+    upstreamKey: "auto",
+    reasoning: true,
+    vision: true,
+    contextWindow: 200000,
     description: "Qoder CN smart routing; fallback context window of 200K.",
   },
   {
-    id: "Qwen3.7-Max",
-    upstreamKey: "qmodel_latest",
     name: "Qwen3.7-Max",
-    api: "qoder-api",
-    provider: "qoder-cn",
-    baseUrl: getQoderBaseUrl("cn"),
+    upstreamKey: "qmodel_latest",
     reasoning: true,
-    supportsEffort: false,
-    input: ["text", "image"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
+    vision: true,
     description: "Qoder CN qmodel_latest; context options 200K/400K/1M.",
   },
   {
-    id: "Qwen3.7-Plus",
-    upstreamKey: "qmodel",
     name: "Qwen3.7-Plus",
-    api: "qoder-api",
-    provider: "qoder-cn",
-    baseUrl: getQoderBaseUrl("cn"),
+    upstreamKey: "qmodel",
     reasoning: true,
-    supportsEffort: false,
-    input: ["text"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN qmodel; context options 200K/400K/1M.",
   },
   {
-    id: "Qwen3.6-Flash",
-    upstreamKey: "q36fmodel",
     name: "Qwen3.6-Flash",
-    api: "qoder-api",
-    provider: "qoder-cn",
-    baseUrl: getQoderBaseUrl("cn"),
+    upstreamKey: "q36fmodel",
     reasoning: true,
-    supportsEffort: false,
-    input: ["text"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN q36fmodel; context options 200K/400K/1M.",
   },
   {
-    id: "DeepSeek-V4-Pro",
-    upstreamKey: "dmodel",
     name: "DeepSeek-V4-Pro",
-    api: "qoder-api",
-    provider: "qoder-cn",
-    baseUrl: getQoderBaseUrl("cn"),
+    upstreamKey: "dmodel",
     reasoning: true,
-    supportsEffort: false,
-    input: ["text"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN dmodel; context options 200K/400K/1M.",
   },
   {
-    id: "DeepSeek-V4-Flash",
-    upstreamKey: "dfmodel",
     name: "DeepSeek-V4-Flash",
-    api: "qoder-api",
-    provider: "qoder-cn",
-    baseUrl: getQoderBaseUrl("cn"),
+    upstreamKey: "dfmodel",
     reasoning: false,
-    supportsEffort: false,
-    input: ["text"],
-    cost: ZERO_COST,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN dfmodel; context options 200K/400K/1M.",
   },
   {
-    id: "GLM-5.2",
-    upstreamKey: "gm51model",
-    name: "GLM-5.2",
-    api: "qoder-api",
-    provider: "qoder-cn",
-    baseUrl: getQoderBaseUrl("cn"),
-    reasoning: true,
-    supportsEffort: false,
-    input: ["text", "image"],
-    cost: ZERO_COST,
     // Live CN catalog currently displays 200K; do not copy global gm51model's 1M.
+    name: "GLM-5.2",
+    upstreamKey: "gm51model",
+    reasoning: true,
+    vision: true,
     contextWindow: 200000,
-    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN gm51model; live catalog currently displays GLM-5.2 with 200K context.",
   },
   {
-    id: "Kimi-K2.7-Code",
-    upstreamKey: "kmodel",
-    name: "Kimi-K2.7-Code",
-    api: "qoder-api",
-    provider: "qoder-cn",
-    baseUrl: getQoderBaseUrl("cn"),
-    reasoning: true,
-    supportsEffort: false,
-    input: ["text", "image"],
-    cost: ZERO_COST,
     // Catalog advertises 256K; same as global kmodel.
+    name: "Kimi-K2.7-Code",
+    upstreamKey: "kmodel",
+    reasoning: true,
+    vision: true,
     contextWindow: 256000,
-    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN kmodel; context option 256K.",
   },
   {
-    id: "MiniMax-M2.7",
-    upstreamKey: "mmodel",
-    name: "MiniMax-M2.7",
-    api: "qoder-api",
-    provider: "qoder-cn",
-    baseUrl: getQoderBaseUrl("cn"),
-    reasoning: false,
-    supportsEffort: false,
-    input: ["text"],
-    cost: ZERO_COST,
     // Live CN catalog reports 200K; not confirmed at 1M.
+    name: "MiniMax-M2.7",
+    upstreamKey: "mmodel",
+    reasoning: false,
     contextWindow: 200000,
-    maxTokens: MAX_OUTPUT_TOKENS,
     description: "Qoder CN mmodel; live catalog reports 200K context.",
   },
-];
+]);
 
 /** pi thinking levels in display order (matches the pi-ai SDK this build targets). */
 const PI_THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
@@ -613,30 +376,28 @@ export function getCachedModelConfig(modelId: string, mode: QoderMode): QoderMod
   return null;
 }
 
+/** Largest `context_config` token_count an entry advertises, or 0 when none. */
+function maxContextTokenCount(contextConfig: QoderModelEntry["context_config"]): number {
+  if (!contextConfig || typeof contextConfig !== "object") return 0;
+  let max = 0;
+  for (const config of Object.values(contextConfig)) {
+    if (config && typeof config === "object" && typeof config.token_count === "number" && config.token_count > max) {
+      max = config.token_count;
+    }
+  }
+  return max;
+}
+
 /** Resolve contextWindow from a catalog entry. Exported for tests. */
 export function contextWindowFromCatalog(entry: QoderModelEntry): number {
-  const contextConfig = entry.context_config;
-  if (contextConfig && typeof contextConfig === "object") {
-    let advertised = 0;
-    for (const configVal of Object.values(contextConfig)) {
-      if (configVal && typeof configVal === "object" && typeof configVal.token_count === "number") {
-        if (configVal.token_count > advertised) advertised = configVal.token_count;
-      }
-    }
-    if (advertised > 0) return advertised;
-  }
-  return DEFAULT_CONTEXT_WINDOW;
+  return maxContextTokenCount(entry.context_config) || DEFAULT_CONTEXT_WINDOW;
 }
 
 /** Prefer the largest context option when Qoder exposes selectable contexts. */
 function withMaxContextAsDefault(entry: QoderModelEntry): QoderModelEntry {
   const contextConfig = entry.context_config;
-  if (!contextConfig || typeof contextConfig !== "object") return entry;
-
-  const maxTokenCount = Math.max(
-    ...Object.values(contextConfig).map((config) => (typeof config?.token_count === "number" ? config.token_count : 0)),
-  );
-  if (maxTokenCount <= 0) return entry;
+  const maxTokenCount = maxContextTokenCount(contextConfig);
+  if (maxTokenCount <= 0 || !contextConfig) return entry;
 
   return {
     ...entry,
