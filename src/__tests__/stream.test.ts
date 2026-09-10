@@ -285,6 +285,22 @@ describe("streamQoder", () => {
     expect(textDeltas[0] && "delta" in textDeltas[0] ? textDeltas[0].delta : "").toBe("ab");
   });
 
+  it("keeps many ordinary reasoning chunks intact without DSML markup", async () => {
+    const reasoning = Array.from({ length: 200 }, (_, index) => `thought-${index} `).join("");
+    const sse =
+      Array.from({ length: 200 }, (_, index) => sseEnvelope(chunk({ reasoning_content: `thought-${index} ` }))).join(
+        "",
+      ) +
+      sseEnvelope(finishChunk("stop")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake", reasoning: "high" }));
+    const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+
+    expect(done.message.content).toEqual([{ type: "thinking", thinking: reasoning }]);
+  });
+
   it("finishes a large buffered SSE response without a parser loop", async () => {
     const sse =
       Array.from({ length: 100 }, () => sseEnvelope(chunk({ content: "x", role: "assistant" }))).join("") + DONE_SSE;

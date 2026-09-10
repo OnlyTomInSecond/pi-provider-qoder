@@ -40,6 +40,20 @@ export class DsmlToolCallParser {
     if (pending > MAX_DSML_BUFFER_LENGTH) {
       throw new Error(`Qoder DSML buffer exceeded ${MAX_DSML_BUFFER_LENGTH} characters`);
     }
+
+    // Most reasoning/content chunks are ordinary text. Avoid concatenating and
+    // draining the parser when there is no complete or split wrapper marker;
+    // the bounded suffix check still preserves wrapper boundaries split across
+    // chunks and channels.
+    if (
+      this.block === null &&
+      this.buffer.length === 0 &&
+      !WRAPPER_STARTS.some((candidate) => chunk.includes(candidate)) &&
+      longestMarkerSuffix(chunk, WRAPPER_STARTS) === 0
+    ) {
+      return [{ type: "text", text: chunk }];
+    }
+
     this.buffer += chunk;
     return this.drain();
   }
@@ -294,10 +308,15 @@ function findFirst<T extends string>(value: string, candidates: readonly T[]): {
 
 /** Length of the longest suffix of `value` that begins one of the candidates. */
 function longestMarkerSuffix(value: string, candidates: readonly string[]): number {
-  let longest = 0;
-  for (let length = 1; length <= value.length; length++) {
-    const suffix = value.slice(-length);
-    if (candidates.some((candidate) => candidate.startsWith(suffix))) longest = length;
+  // Every DSML wrapper start begins with '<'. A valid partial suffix must
+  // therefore start at the final '<' in the value; checking only that suffix
+  // avoids scanning every possible length of a large ordinary text chunk.
+  const markerStart = value.lastIndexOf("<");
+  if (markerStart === -1) return 0;
+
+  const suffix = value.slice(markerStart);
+  for (const candidate of candidates) {
+    if (suffix.length < candidate.length && candidate.startsWith(suffix)) return suffix.length;
   }
-  return longest;
+  return 0;
 }
