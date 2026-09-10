@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import { isCacheStale, updateQoderModelsCache } from "../catalog.js";
 import { getMachineId } from "../cosy.js";
 import { getQoderRefreshURL, getQoderRegionConfig, type QoderMode } from "../region.js";
@@ -16,16 +15,25 @@ export interface QoderCredentials extends OAuthCredentials {
   machineID: string;
 }
 
+interface AuthStorageLike {
+  create?: () => { set?: (providerID: string, credentials: unknown) => void };
+}
+
 /**
- * `AuthStorage` is not part of every pi-coding-agent release's public exports,
- * so it is read off the module namespace instead of imported by name: a missing
- * export must degrade to the auth-file fallback below, not break the build.
+ * Lazily load the host's `AuthStorage`. A static import of
+ * `@earendil-works/pi-coding-agent` pulls in the package's entire module graph
+ * (measured ~300ms per process start), so it is deferred: only env-PAT
+ * auto-login consults it. Hosts that do not export a usable `AuthStorage` fall
+ * back to writing auth.json directly, which is what pi itself reads.
  */
-const AuthStorage = (
-  PiCodingAgent as unknown as {
-    AuthStorage?: { create?: () => { set: (providerID: string, credentials: unknown) => void } };
-  }
-).AuthStorage;
+let authStoragePromise: Promise<AuthStorageLike | undefined> | undefined;
+
+function loadHostAuthStorage(): Promise<AuthStorageLike | undefined> {
+  authStoragePromise ??= import("@earendil-works/pi-coding-agent")
+    .then((mod) => (mod as unknown as { AuthStorage?: AuthStorageLike }).AuthStorage)
+    .catch(() => undefined);
+  return authStoragePromise;
+}
 
 const identityCache = new Map<string, QoderCredentials>();
 
@@ -107,9 +115,11 @@ export async function autoLoginQoderFromEnvironment(providerID: string, mode: Qo
   // account's credentials.
   const credentials = await credentialsFromPat(pat, mode);
 
-  if (typeof AuthStorage?.create === "function") {
+  const hostAuthStorage = await loadHostAuthStorage();
+  if (typeof hostAuthStorage?.create === "function") {
     try {
-      const authStorage = AuthStorage.create();
+      const authStorage = hostAuthStorage.create();
+      if (typeof authStorage?.set !== "function") throw new Error("AuthStorage has no set()");
       authStorage.set(providerID, { type: "oauth", ...credentials });
     } catch {
       saveCredentialsToAuthFile(providerID, credentials);
