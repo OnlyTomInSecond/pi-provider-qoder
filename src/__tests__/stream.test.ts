@@ -301,6 +301,36 @@ describe("streamQoder", () => {
     expect(done.message.content).toEqual([{ type: "thinking", thinking: reasoning }]);
   });
 
+  it("coalesces a fast burst of reasoning deltas into a single event", async () => {
+    // A huge throttle window makes the coalescing deterministic: all consecutive
+    // reasoning deltas must merge until the next ordering boundary (thinking_end).
+    process.env.QODER_STREAM_DELTA_INTERVAL_MS = "100000";
+    try {
+      const reasoning = Array.from({ length: 200 }, (_, index) => `thought-${index} `).join("");
+      const sse =
+        Array.from({ length: 200 }, (_, index) => sseEnvelope(chunk({ reasoning_content: `thought-${index} ` }))).join(
+          "",
+        ) +
+        sseEnvelope(finishChunk("stop")) +
+        DONE_SSE;
+      globalThis.fetch = mockFetch(sse);
+
+      const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake", reasoning: "high" }));
+      const deltas = events.filter((event) => event.type === "thinking_delta");
+      const streamed = deltas.reduce((acc, event) => acc + ("delta" in event ? event.delta.length : 0), 0);
+
+      // The host re-renders the whole block per delta, so the burst must not
+      // produce one event per chunk.
+      expect(deltas.length).toBeLessThanOrEqual(2);
+      expect(streamed).toBe(reasoning.length);
+
+      const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+      expect(done.message.content).toEqual([{ type: "thinking", thinking: reasoning }]);
+    } finally {
+      delete process.env.QODER_STREAM_DELTA_INTERVAL_MS;
+    }
+  });
+
   it("finishes a large buffered SSE response without a parser loop", async () => {
     const sse =
       Array.from({ length: 100 }, () => sseEnvelope(chunk({ content: "x", role: "assistant" }))).join("") + DONE_SSE;

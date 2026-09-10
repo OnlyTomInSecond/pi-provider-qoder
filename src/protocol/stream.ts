@@ -35,6 +35,15 @@ function isThinkingRequested(reasoning: unknown): boolean {
 
 const SSE_LINES_PER_YIELD = 32;
 
+/**
+ * Minimum wall-clock interval between coalesced delta pushes. Hosts (pi) rebuild
+ * and re-layout the whole text/thinking block on every `message_update`, so
+ * emitting one delta per SSE line makes rendering quadratic in the response
+ * length. Coalescing deltas to ~20 pushes/second keeps the UI smooth while
+ * bounding that render work. Override with QODER_STREAM_DELTA_INTERVAL_MS.
+ */
+const DELTA_FLUSH_INTERVAL_MS = 50;
+
 function stableHash(prefix: string, ...inputs: string[]): string {
   const hash = crypto.createHash("sha256");
   hash.update(prefix);
@@ -77,11 +86,20 @@ export function streamQoder(
   };
 
   let pendingDelta: QoderDeltaEvent | null = null;
-  const flushPendingDelta = (): void => {
-    if (pendingDelta) {
-      stream.push(pendingDelta);
-      pendingDelta = null;
-    }
+  let lastDeltaFlushAt = Date.now();
+  const configuredDeltaInterval = Number(process.env.QODER_STREAM_DELTA_INTERVAL_MS);
+  const deltaIntervalMs =
+    Number.isFinite(configuredDeltaInterval) && configuredDeltaInterval >= 0
+      ? configuredDeltaInterval
+      : DELTA_FLUSH_INTERVAL_MS;
+  /** Push the coalesced delta, unless we pushed one within the throttle window. */
+  const flushPendingDelta = (force = false): void => {
+    if (!pendingDelta) return;
+    const now = Date.now();
+    if (!force && now - lastDeltaFlushAt < deltaIntervalMs) return;
+    stream.push(pendingDelta);
+    pendingDelta = null;
+    lastDeltaFlushAt = now;
   };
   const pushEvent = (event: QoderStreamEvent): void => {
     if (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_delta") {
@@ -89,11 +107,13 @@ export function streamQoder(
         pendingDelta = { ...pendingDelta, delta: pendingDelta.delta + event.delta };
         return;
       }
-      flushPendingDelta();
+      // A different block/type must keep its ordering, so flush unconditionally.
+      flushPendingDelta(true);
       pendingDelta = event;
       return;
     }
-    flushPendingDelta();
+    // Any non-delta event is an ordering boundary (start/end/done/error).
+    flushPendingDelta(true);
     stream.push(event);
   };
 
@@ -447,6 +467,9 @@ export function streamQoder(
         for (const rawLine of lines) {
           const line = rawLine.trim();
 
+          // Yield every N lines to keep the event loop responsive. The flush
+          // inside is throttled by DELTA_FLUSH_INTERVAL_MS, so a fast stream
+          // coalesces deltas instead of re-rendering once per SSE line.
           if (++linesSinceYield >= SSE_LINES_PER_YIELD) {
             linesSinceYield = 0;
             flushPendingDelta();
