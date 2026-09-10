@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { buildAuthHeaders } from "./cosy.js";
 import { getHomeDir } from "./home.js";
+import { parseQoderPriceFactor } from "./protocol/usage.js";
 import { getQoderBaseUrl, getQoderModelListURL, getQoderRegionConfig, type QoderMode } from "./region.js";
 
 export const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
@@ -62,6 +63,12 @@ export interface QoderModelDef {
   contextWindow: number;
   maxTokens: number;
   description?: string;
+  /**
+   * Relative Credit multiplier from the live catalog (`price_factor`). Qoder
+   * bills in Credits, not USD, so this is exposed as metadata rather than folded
+   * into the monetary `cost`. Absent when the catalog omits it.
+   */
+  priceFactor?: number;
 }
 
 function getQoderCachePath(mode: QoderMode): string {
@@ -496,6 +503,7 @@ async function fetchAndCacheModelList(
       const isReasoning = !!entry.is_reasoning || !!entry.thinking_config;
       const supportsEffort = !!entry.thinking_config?.enabled?.efforts;
       const thinkingLevelMap = buildThinkingLevelMap(entry);
+      const priceFactor = parseQoderPriceFactor(entry.price_factor);
       // Both regions expose display_name (whitespace-stripped) as the sole
       // pi-visible id. The config stores the upstream key under that id for
       // request-time use.
@@ -516,6 +524,7 @@ async function fetchAndCacheModelList(
         cost: ZERO_COST,
         contextWindow: ctxLen,
         maxTokens: MAX_OUTPUT_TOKENS,
+        ...(priceFactor !== undefined ? { priceFactor } : {}),
       });
     }
 

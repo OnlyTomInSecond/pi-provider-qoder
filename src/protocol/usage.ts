@@ -32,3 +32,8 @@ export function parseQoderCreditsUsage(value: unknown): QoderCreditsUsage {
   if (typeof usage.billable === "boolean") result.billable = usage.billable;
   return result;
 }
+
+/** Parse the relative Credit multiplier (`price_factor`) from a catalog entry. */
+export function parseQoderPriceFactor(value: unknown): number | undefined {
+  return nonNegativeFiniteNumber(value);
+}
