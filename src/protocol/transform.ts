@@ -95,6 +95,22 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
   const droppedToolCallIds = new Set<string>();
   const emittedToolResultIds = new Set<string>();
 
+  // Deferred user messages carrying images from tool results. The OpenAI-shaped
+  // `tool` role has no place for images, so they follow as user messages. But
+  // they must not be inserted between the assistant's tool_calls message and
+  // the corresponding tool messages (or between multiple tool messages for
+  // parallel tool calls), because the upstream API requires every tool message
+  // to immediately follow the assistant message that declared its tool_call_id.
+  // Accumulate them here and flush only once all tool results for the current
+  // assistant round have been processed.
+  const deferredImageMessages: QoderMessage[] = [];
+
+  const flushDeferredImages = (): void => {
+    while (deferredImageMessages.length > 0) {
+      normalizedMessages.push(deferredImageMessages.shift()!);
+    }
+  };
+
   // Pre-scan declarations so an orphan result that appears before a valid
   // assistant tool-call is still rejected. If a caller supplies only a
   // standalone toolResult (a useful unit-level/legacy input), leave it
@@ -136,6 +152,13 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
         continue;
       }
       if (declaredToolCallIds.has(toolCallId)) emittedToolResultIds.add(toolCallId);
+    }
+
+    // Before processing the next non-toolResult message, flush any deferred
+    // image-bearing user messages so they don't break the tool_calls → tool
+    // → tool → ... sequence.
+    if (msg.role !== "toolResult") {
+      flushDeferredImages();
     }
 
     if (msg.role === "user") {
@@ -238,9 +261,16 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
       // a plain string — so they follow as a separate user message, the same
       // shape the user branch above already builds. The leading label keeps the
       // model from reading a bare image as something the human just sent.
+      //
+      // Defer these user messages instead of pushing them immediately: if there
+      // are multiple tool results for the same assistant tool_calls message, an
+      // inline user message between tool results breaks the upstream API
+      // constraint that every tool message must immediately follow the assistant
+      // with tool_calls. The deferral is flushed when the next non-toolResult
+      // message is encountered or at the end of the loop.
       const images = getContentImages(tr);
       if (images.length > 0) {
-        normalizedMessages.push({
+        deferredImageMessages.push({
           role: "user",
           content: [
             {
@@ -258,6 +288,10 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
       }
     }
   }
+
+  // Flush any remaining deferred image-bearing user messages (e.g. when the
+  // last message in the history was a toolResult with images).
+  flushDeferredImages();
 
   return normalizedMessages;
 }
