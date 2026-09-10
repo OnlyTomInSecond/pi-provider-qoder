@@ -200,6 +200,35 @@ describe("Qoder model cache", () => {
     expect(cache.models[0].contextWindow).toBe(200000);
   });
 
+  it("exposes the catalog price_factor as model metadata", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            chat: [
+              { key: "cmodel", enable: true, display_name: "Cantus", price_factor: 3.2 },
+              { key: "lite", enable: true, display_name: "Lite", price_factor: 0 },
+              { key: "qfmodel", enable: true, display_name: "Qwen3.8-Flash" },
+            ],
+          }),
+      }),
+    );
+
+    await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
+
+    const cache = JSON.parse(readFileSync(CACHE_PATHS.global, "utf8"));
+    const byId: Record<string, { priceFactor?: number }> = Object.fromEntries(
+      cache.models.map((model: { id: string }) => [model.id, model]),
+    );
+    expect(byId.Cantus.priceFactor).toBe(3.2);
+    // 0 is a real multiplier, not a missing value.
+    expect(byId.Lite.priceFactor).toBe(0);
+    // Absent when the catalog does not report it (undefined is dropped by JSON).
+    expect("priceFactor" in byId["Qwen3.8-Flash"]).toBe(false);
+  });
+
   it("serves getCachedModelConfig from memory after the cache file is removed", async () => {
     vi.stubGlobal(
       "fetch",
