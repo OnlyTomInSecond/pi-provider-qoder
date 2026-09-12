@@ -2,7 +2,13 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearQoderModelsMemCache, getCachedModelConfig, getCachedModels, updateQoderModelsCache } from "../catalog.js";
+import {
+  clearQoderModelsMemCache,
+  getCachedModelConfig,
+  getCachedModels,
+  isCacheStale,
+  updateQoderModelsCache,
+} from "../catalog.js";
 import { loadLiveFixture, responseFromFixture } from "./live-fixture.js";
 
 function testHome(): string {
@@ -56,6 +62,24 @@ describe("Qoder model cache", () => {
       expect(getCachedModelConfig(friendlyId, region)?.key).toBe(entry.key);
       expect(getCachedModelConfig(entry.key, region)).toBeNull();
     }
+  });
+
+  it("treats a cache fetched for another account as stale", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ chat: [{ key: "lite", enable: true, display_name: "Lite" }] }),
+      }),
+    );
+
+    await updateQoderModelsCache("access-token", "user-a", "A", "a@example.com", "global");
+
+    expect(isCacheStale("global", "user-a")).toBe(false);
+    expect(isCacheStale("global", "user-b")).toBe(true);
+    // Without a userID the check keeps its legacy TTL-only behaviour.
+    expect(isCacheStale("global")).toBe(false);
+    expect(JSON.parse(readFileSync(CACHE_PATHS.global, "utf8")).userID).toBe("user-a");
   });
 
   it("does not register raw live-catalog keys as public model ids", async () => {

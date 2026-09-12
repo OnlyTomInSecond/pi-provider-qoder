@@ -78,6 +78,11 @@ function getQoderCachePath(mode: QoderMode): string {
 
 interface ParsedModelCache {
   updatedAt?: number;
+  /**
+   * Account the catalog was fetched for. Model entitlements are per account,
+   * so a cache built for a different user must not be reused within its TTL.
+   */
+  userID?: string;
   models?: QoderModelDef[];
   configs?: Record<string, QoderModelEntry>;
 }
@@ -418,9 +423,13 @@ function withMaxContextAsDefault(entry: QoderModelEntry): QoderModelEntry {
   };
 }
 
-export function isCacheStale(mode: QoderMode): boolean {
+export function isCacheStale(mode: QoderMode, userID?: string): boolean {
   const data = readParsedModelCache(mode);
   if (!data || typeof data.updatedAt !== "number") return true;
+  // Stale if the cache belongs to another account: Qoder entitlements (and
+  // therefore the advertised model list) are per account. A legacy cache with
+  // no recorded userID counts as stale too, so it gets stamped once.
+  if (userID && data.userID !== userID) return true;
   // Stale if older than 1 hour
   return Date.now() - data.updatedAt > 3600_000;
 }
@@ -533,6 +542,7 @@ async function fetchAndCacheModelList(
 
     const cacheData = {
       updatedAt: Date.now(),
+      userID,
       models: newModels,
       configs,
     };

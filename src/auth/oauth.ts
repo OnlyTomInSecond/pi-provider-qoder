@@ -170,13 +170,13 @@ export async function autoLoginQoderFromEnvironment(providerID: string, mode: Qo
   const qCreds = credentials as QoderCredentials;
 
   // Refresh the model catalog before the provider is registered only when the
-  // cached list is stale (>1h), mirroring refreshQoderModelsCache. The PAT
-  // exchange above is authoritative for *identity* and always runs, but the
-  // model list changes rarely and the cache is not account-keyed within its
-  // TTL, so a fresh cache is reused instead of re-fetched on every boot.
+  // cached list is stale (>1h) or belongs to a different account, mirroring
+  // refreshQoderModelsCache. The PAT exchange above is authoritative for
+  // *identity* and always runs, but the model list changes rarely and a fresh,
+  // same-account cache is reused instead of re-fetched on every boot.
   // (Blocking matters for `pi --list-models`, which can exit before background
   // work completes — so the stale fetch is awaited, not fired-and-forgotten.)
-  if (isCacheStale(mode)) {
+  if (isCacheStale(mode, qCreds.userID)) {
     await updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode);
   }
 }
