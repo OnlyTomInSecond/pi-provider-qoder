@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { buildAuthHeaders } from "./cosy.js";
+import { debugLog } from "./debug.js";
 import { getHomeDir } from "./home.js";
 import { parseQoderPriceFactor } from "./protocol/usage.js";
 import { getQoderBaseUrl, getQoderModelListURL, getQoderRegionConfig, type QoderMode } from "./region.js";
@@ -537,5 +538,7 @@ async function fetchAndCacheModelList(
     };
 
     writeParsedModelCache(mode, cacheData);
-  } catch {}
+  } catch (error) {
+    debugLog("model catalog refresh failed", error);
+  }
 }
