@@ -6,6 +6,7 @@ import { debugLog } from "./debug.js";
 import { getHomeDir } from "./home.js";
 import { parseQoderPriceFactor } from "./protocol/usage.js";
 import { getQoderBaseUrl, getQoderModelListURL, getQoderRegionConfig, type QoderMode } from "./region.js";
+import { fetchWithRetry } from "./retry.js";
 
 export const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
@@ -479,7 +480,7 @@ async function fetchAndCacheModelList(
       email,
     });
 
-    const response = await fetch(modelListURL, {
+    const response = await fetchWithRetry(modelListURL, {
       method: "GET",
       headers: {
         Accept: "application/json",
