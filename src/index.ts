@@ -8,6 +8,7 @@ import {
 } from "./auth/oauth.js";
 import { fetchQoderUsageForMode } from "./auth/usage.js";
 import { getCachedModels, isCacheStale, staticCnModels, staticModels, updateQoderModelsCache } from "./catalog.js";
+import { debugLog } from "./debug.js";
 import { streamQoder } from "./protocol/stream.js";
 import { getQoderBaseUrl, getQoderRegionConfig, QODER_MODES, type QoderMode } from "./region.js";
 
@@ -31,8 +32,9 @@ async function registerQoderApi(): Promise<void> {
       { api: QODER_API, stream: streamQoder, streamSimple: streamQoder },
       "provider:qoder",
     );
-  } catch {
+  } catch (error) {
     // Host has no compat registry; registerProvider(streamSimple) is enough.
+    debugLog("pi-ai/compat registerApiProvider unavailable", error);
   }
 }
 
@@ -129,8 +131,9 @@ export default async function (pi: ExtensionAPI) {
         const accessToken = await ctx.modelRegistry.getApiKeyForProvider(providerID);
         if (!accessToken) continue;
         await refreshQoderModelsCache(mode, accessToken);
-      } catch {
+      } catch (error) {
         // Best-effort: fall back to the existing cache / static models.
+        debugLog(`session_start model catalog refresh failed for ${mode}`, error);
       }
     }
   });

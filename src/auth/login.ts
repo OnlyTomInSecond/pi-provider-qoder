@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { getMachineId } from "../cosy.js";
+import { debugLog } from "../debug.js";
 import {
   getQoderDeviceLoginURL,
   getQoderDevicePollURL,
@@ -148,7 +149,9 @@ async function runDeviceFlow(callbacks: OAuthLoginCallbacks): Promise<OAuthCrede
           email = userinfo.email || "";
           name = userinfo.name || userinfo.username || "";
         }
-      } catch {}
+      } catch (error) {
+        debugLog("failed to fetch userinfo during device login", error);
+      }
 
       getProgress(callbacks)?.("Login successful!");
 

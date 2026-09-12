@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { debugLog } from "./debug.js";
 import { getHomeDir } from "./home.js";
 
 const qoderRSAPublicKey = `-----BEGIN PUBLIC KEY-----
@@ -97,7 +98,9 @@ export function getMachineId(): string {
           machineIdMem = { home, id: val };
           return val;
         }
-      } catch {}
+      } catch (error) {
+        debugLog(`failed to read machine id from ${p}`, error);
+      }
     }
   }
   const newId = crypto.randomUUID();
@@ -105,7 +108,9 @@ export function getMachineId(): string {
     const savePath = paths[1];
     mkdirSync(dirname(savePath), { recursive: true });
     writeFileSync(savePath, newId, "utf8");
-  } catch {}
+  } catch (error) {
+    debugLog("failed to persist generated machine id", error);
+  }
   machineIdMem = { home, id: newId };
   return newId;
 }
