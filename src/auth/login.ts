@@ -8,6 +8,7 @@ import {
   getQoderUserInfoURL,
   type QoderMode,
 } from "../region.js";
+import { resolveTokenExpiry } from "./expiry.js";
 import { credentialsFromPat } from "./pat.js";
 
 /** pi's LoginDialog drives the interactive flow through these typed callbacks. */
@@ -19,19 +20,6 @@ export function generatePKCE() {
   const codeVerifier = crypto.randomBytes(32).toString("base64url");
   const codeChallenge = crypto.createHash("sha256").update(codeVerifier).digest("base64url");
   return { codeVerifier, codeChallenge };
-}
-
-function parseExpiresAt(s?: string, expiresInSeconds?: number): number {
-  if (s) {
-    const t = Date.parse(s);
-    if (!Number.isNaN(t)) return t;
-    const ms = Number.parseInt(s, 10);
-    if (!Number.isNaN(ms) && ms > 0) return ms;
-  }
-  if (expiresInSeconds && expiresInSeconds > 0) {
-    return Date.now() + expiresInSeconds * 1000;
-  }
-  return Date.now() + 30 * 24 * 60 * 60 * 1000; // default 30 days
 }
 
 export async function interactiveLogin(callbacks: OAuthLoginCallbacks, mode: QoderMode): Promise<OAuthCredentials> {
@@ -135,7 +123,8 @@ async function runDeviceFlow(callbacks: OAuthLoginCallbacks): Promise<OAuthCrede
         throw new Error("Device token poll returned empty access token");
       }
 
-      const expireMs = parseExpiresAt(tokenData.expires_at, tokenData.expires_in);
+      // Qoder reports `expires_in` in milliseconds (see expiry.ts).
+      const expireMs = resolveTokenExpiry(tokenData);
 
       // Fetch user info (best effort)
       getProgress(callbacks)?.("Fetching user profile...");

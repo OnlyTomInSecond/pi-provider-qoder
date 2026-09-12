@@ -91,7 +91,10 @@ describe("recorded-format PAT protocol fixtures", () => {
 
     expect(result.jobToken).toBe("<redacted:job-token>");
     expect(result.jobRefreshToken).toBe("<redacted:refresh-token>");
-    expect(result.expiresAt).toBeGreaterThan(Date.now());
+    // Fixture ships expires_in: 86400000, which the API reports in
+    // milliseconds (24h). Guard against the old seconds interpretation.
+    expect(result.expiresAt).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
+    expect(result.expiresAt).toBeLessThan(Date.now() + 25 * 60 * 60 * 1000);
     expect(fetch).toHaveBeenCalledWith(
       interaction.request.url,
       expect.objectContaining({
