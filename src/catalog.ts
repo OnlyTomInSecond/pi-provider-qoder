@@ -100,10 +100,11 @@ const modelCacheMem = new Map<string, ParsedModelCache | null>();
 const configIndexMem = new Map<string, Map<string, QoderModelEntry>>();
 
 /**
- * In-flight model-catalog fetches keyed by cache path (mode). Multiple callers
- * within one process (auto-login, session_start, login, token refresh) can fire
- * updateQoderModelsCache at roughly the same time; this coalesces them into a
- * single network request instead of re-fetching the model list per caller.
+ * In-flight model-catalog fetches keyed by cache path **and account**. Multiple
+ * callers within one process (auto-login, session_start, login, token refresh)
+ * can fire updateQoderModelsCache at roughly the same time; this coalesces the
+ * same-account ones into a single network request instead of re-fetching the
+ * model list per caller, while keeping different accounts separate.
  */
 const inflightModelUpdates = new Map<string, Promise<void>>();
 
@@ -462,9 +463,12 @@ export function isCacheStale(mode: QoderMode, userID?: string): boolean {
 
 /**
  * Refresh the model catalog for `mode` from the live /model/list endpoint.
- * Concurrent calls for the same mode within one process are coalesced into a
- * single network request (see inflightModelUpdates), so a startup auto-login,
- * a session_start hook and a token refresh firing together only fetch once.
+ * Concurrent calls for the same mode **and account** within one process are
+ * coalesced into a single network request (see inflightModelUpdates), so a
+ * startup auto-login, a session_start hook and a token refresh firing together
+ * only fetch once. Account identity is part of the key: the result is cached
+ * per account, so joining another account's in-flight request would stamp the
+ * wrong userID onto this account's cache.
  * Network errors are swallowed (returns normally) so callers stay best-effort.
  */
 export async function updateQoderModelsCache(
@@ -474,18 +478,18 @@ export async function updateQoderModelsCache(
   email: string,
   mode: QoderMode,
 ): Promise<void> {
-  const cachePath = getQoderCachePath(mode);
-  const inflight = inflightModelUpdates.get(cachePath);
+  const inflightKey = `${getQoderCachePath(mode)}:${userID}`;
+  const inflight = inflightModelUpdates.get(inflightKey);
   if (inflight) return inflight;
 
   const promise = (async () => {
     try {
       await fetchAndCacheModelList(authToken, userID, name, email, mode);
     } finally {
-      inflightModelUpdates.delete(cachePath);
+      inflightModelUpdates.delete(inflightKey);
     }
   })();
-  inflightModelUpdates.set(cachePath, promise);
+  inflightModelUpdates.set(inflightKey, promise);
   return promise;
 }
 

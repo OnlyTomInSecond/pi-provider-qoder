@@ -82,6 +82,34 @@ describe("Qoder model cache", () => {
     expect(JSON.parse(readFileSync(CACHE_PATHS.global, "utf8")).userID).toBe("user-a");
   });
 
+  it("coalesces concurrent refreshes for the same account", async () => {
+    const resolvers: Array<(value: Response) => void> = [];
+    const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => resolvers.push(resolve)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const p1 = updateQoderModelsCache("token-a", "user-a", "A", "a@example.com", "global");
+    const p2 = updateQoderModelsCache("token-a", "user-a", "A", "a@example.com", "global");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const body = JSON.stringify({ chat: [{ key: "lite", enable: true, display_name: "Lite" }] });
+    for (const resolve of resolvers) resolve(new Response(body, { status: 200 }));
+    await Promise.all([p1, p2]);
+  });
+
+  it("does not coalesce refreshes for different accounts", async () => {
+    const resolvers: Array<(value: Response) => void> = [];
+    const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => resolvers.push(resolve)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const p1 = updateQoderModelsCache("token-a", "user-a", "A", "a@example.com", "global");
+    const p2 = updateQoderModelsCache("token-b", "user-b", "B", "b@example.com", "global");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const body = JSON.stringify({ chat: [{ key: "lite", enable: true, display_name: "Lite" }] });
+    for (const resolve of resolvers) resolve(new Response(body, { status: 200 }));
+    await Promise.all([p1, p2]);
+  });
+
   it("does not register raw live-catalog keys as public model ids", async () => {
     vi.stubGlobal(
       "fetch",
