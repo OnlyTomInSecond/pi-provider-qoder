@@ -321,13 +321,38 @@ function buildThinkingLevelMap(entry: QoderModelEntry): ThinkingLevelMap | undef
   return undefined;
 }
 
+/**
+ * Lazily built indexes over the static fallback catalogs. `getCachedModels`
+ * maps every cached entry back to a seed (by upstream key) and
+ * `getCachedModelConfig` resolves a fallback by public id; both used to run a
+ * linear `.find` per call. The seed arrays are module constants, so the maps
+ * are built once per mode.
+ */
+const staticSeedByUpstreamKey = new Map<QoderMode, Map<string, QoderModelDef>>();
+const staticSeedById = new Map<QoderMode, Map<string, QoderModelDef>>();
+
+function getStaticSeedIndex(mode: QoderMode, by: "upstreamKey" | "id"): Map<string, QoderModelDef> {
+  const store = by === "upstreamKey" ? staticSeedByUpstreamKey : staticSeedById;
+  const existing = store.get(mode);
+  if (existing) return existing;
+
+  const index = new Map<string, QoderModelDef>();
+  for (const model of mode === "cn" ? staticCnModels : staticModels) {
+    const key = by === "upstreamKey" ? model.upstreamKey : model.id;
+    if (key && !index.has(key)) index.set(key, model);
+  }
+  store.set(mode, index);
+  return index;
+}
+
 export function getCachedModels(mode: QoderMode): QoderModelDef[] {
   const data = readParsedModelCache(mode);
   if (data && Array.isArray(data.models)) {
+    const staticByKey = getStaticSeedIndex(mode, "upstreamKey");
     const models = data.models.map((model: QoderModelDef) => {
       const config = data.configs?.[model.id] as QoderModelEntry | undefined;
       const display = config?.display_name;
-      const staticModel = (mode === "cn" ? staticCnModels : staticModels).find((seed) => seed.upstreamKey === model.id);
+      const staticModel = staticByKey.get(model.id);
       if (display) return { ...model, id: toQoderModelId(display), name: display };
       if (staticModel) return { ...model, id: staticModel.id, name: staticModel.name };
       return model.name ? { ...model, id: toQoderModelId(model.name) } : model;
@@ -378,7 +403,7 @@ export function getCachedModelConfig(modelId: string, mode: QoderMode): QoderMod
   const config = getConfigIndex(mode).get(modelId);
   if (config) return withMaxContextAsDefault(config);
 
-  const staticModel = (mode === "cn" ? staticCnModels : staticModels).find((model) => model.id === modelId);
+  const staticModel = getStaticSeedIndex(mode, "id").get(modelId);
   if (staticModel) {
     return {
       key: staticModel.upstreamKey || modelId,
