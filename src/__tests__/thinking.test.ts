@@ -378,4 +378,10 @@ describe("ThinkingTagParser", () => {
     expect(stripThinkingTags("<thinking>")).toBe("");
     expect(stripThinkingTags("</thinking>")).toBe("");
   });
+
+  it("stripThinkingTags removes every occurrence and mixed variants in one pass", () => {
+    expect(stripThinkingTags("<thinking>a</thinking> middle <think>b</think>")).toBe("a middle b");
+    expect(stripThinkingTags("<thought>x</thought><reasoning>y</reasoning>")).toBe("xy");
+    expect(stripThinkingTags("no tags but a < here")).toBe("no tags but a < here");
+  });
 });

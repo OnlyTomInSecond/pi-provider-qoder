@@ -20,6 +20,18 @@ export const THINKING_TAG_VARIANTS: Array<{ open: string; close: string }> = [
 /** Every opener/closer string that can appear in the text channel. */
 const ALL_TAG_STRINGS: readonly string[] = THINKING_TAG_VARIANTS.flatMap((variant) => [variant.open, variant.close]);
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * One alternation over every tag, built once. `stripThinkingTags` used to run
+ * ten `includes` scans plus a `split`/`join` per tag on every reasoning chunk;
+ * a single pass with a `g`-flag replace is equivalent and much cheaper.
+ * `replace` resets lastIndex, so the shared global regex is safe to reuse.
+ */
+const ALL_TAG_PATTERN = new RegExp(ALL_TAG_STRINGS.map(escapeRegExp).join("|"), "g");
+
 /**
  * Longest suffix of `text` that could be the *start* of a longer tag. Used to
  * hold back a tag that a later chunk may still complete, instead of leaking it
@@ -85,12 +97,10 @@ function stripFollowingNewline(text: string): string {
  * content-channel side with cross-delta buffering).
  */
 export function stripThinkingTags(text: string): string {
-  let out = text;
-  for (const { open, close } of THINKING_TAG_VARIANTS) {
-    if (out.includes(open)) out = out.split(open).join("");
-    if (out.includes(close)) out = out.split(close).join("");
-  }
-  return out;
+  // Tags always contain '<'; a single cheap scan short-circuits the common
+  // case of ordinary reasoning text.
+  if (!text.includes("<")) return text;
+  return text.replace(ALL_TAG_PATTERN, "");
 }
 
 type Phase = "text" | "thinking";
