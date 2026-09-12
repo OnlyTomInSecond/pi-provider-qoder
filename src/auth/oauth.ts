@@ -38,6 +38,40 @@ function loadHostAuthStorage(): Promise<AuthStorageLike | undefined> {
 
 const identityCache = new Map<string, QoderCredentials>();
 
+/** Cap the identity memo so long sessions with many token refreshes stay bounded. */
+const MAX_IDENTITY_CACHE = 32;
+
+/**
+ * Memoize an identity, evicting the oldest entry past the cap. Re-inserting an
+ * existing key refreshes its recency (LRU), and a token refresh produces a new
+ * key each time, so the oldest (stale) entries fall off first.
+ */
+function cacheIdentity(key: string, creds: QoderCredentials): void {
+  identityCache.delete(key);
+  identityCache.set(key, creds);
+  if (identityCache.size <= MAX_IDENTITY_CACHE) return;
+  const oldest = identityCache.keys().next().value;
+  if (oldest !== undefined) identityCache.delete(oldest);
+}
+
+/** Insert an identity into the bounded memo. Exposed for tests only. */
+export function cacheQoderIdentityForTest(key: string, creds: QoderCredentials): void {
+  cacheIdentity(key, creds);
+}
+
+/** Current size of the identity memo. Exposed for tests only. */
+export function getQoderIdentityCacheSizeForTest(): number {
+  return identityCache.size;
+}
+
+/** Whether the identity memo contains `key`. Exposed for tests only. */
+export function hasQoderIdentityForTest(key: string): boolean {
+  return identityCache.has(key);
+}
+
+/** Maximum identities kept in the memo. Exposed for tests only. */
+export const MAX_IDENTITY_CACHE_FOR_TEST = MAX_IDENTITY_CACHE;
+
 function getAuthFilePath(): string {
   return join(getHomeDir(), ".pi", "agent", "auth.json");
 }
@@ -94,7 +128,7 @@ function saveCredentialsToAuthFile(providerID: string, credentials: OAuthCredent
     authFileMem = { path: authPath, data: auth };
     const q = credentials as QoderCredentials;
     if (q.access && q.userID) {
-      identityCache.set(`${providerID}:${q.access}`, q);
+      cacheIdentity(`${providerID}:${q.access}`, q);
     }
   } catch (err) {
     console.error(`[pi-provider-qoder] Failed to write auth storage for ${providerID}:`, err);
@@ -153,7 +187,7 @@ export function getCachedCredentials(_accessToken: string, providerID = "qoder")
   const creds = (auth[providerID] || (providerID === "qoder" ? auth.qoder : null)) as QoderCredentials | null;
   if (creds?.userID || creds?.access) {
     if (creds.access && creds.userID) {
-      identityCache.set(`${providerID}:${creds.access}`, creds);
+      cacheIdentity(`${providerID}:${creds.access}`, creds);
     }
     return creds;
   }
@@ -180,7 +214,7 @@ export async function resolveQoderIdentity(
 
   const cached = getCachedCredentials(accessToken, providerID);
   if (cached?.userID) {
-    identityCache.set(cacheKey, cached);
+    cacheIdentity(cacheKey, cached);
     return cached;
   }
 
@@ -195,7 +229,7 @@ export async function resolveQoderIdentity(
     refresh: "",
     expires: 0,
   };
-  identityCache.set(cacheKey, creds);
+  cacheIdentity(cacheKey, creds);
   saveCredentialsToAuthFile(providerID, creds);
   return creds;
 }
