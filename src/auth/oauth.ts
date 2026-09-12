@@ -5,6 +5,7 @@ import { isCacheStale, updateQoderModelsCache } from "../catalog.js";
 import { getMachineId } from "../cosy.js";
 import { getHomeDir } from "../home.js";
 import { getQoderRefreshURL, getQoderRegionConfig, type QoderMode } from "../region.js";
+import { DEFAULT_TOKEN_TTL_MS, resolveTokenExpiry } from "./expiry.js";
 import { interactiveLogin } from "./login.js";
 import { credentialsFromPat, decodePatRefresh, fetchUserInfo, isPatRefresh } from "./pat.js";
 
@@ -292,13 +293,9 @@ export async function refreshQoderTokenForMode(
       const newAccess = data.token;
       const newRefresh = data.refresh_token || refreshToken;
 
-      let expireMs = Date.now() + 30 * 24 * 60 * 60 * 1000;
-      if (data.expires_at) {
-        const parsed = Date.parse(data.expires_at);
-        if (!Number.isNaN(parsed)) expireMs = parsed;
-      } else if (data.expires_in) {
-        expireMs = Date.now() + data.expires_in * 1000;
-      }
+      // Qoder reports `expires_in` in milliseconds (see expiry.ts); keep a
+      // 30-day fallback for responses that omit both fields.
+      const expireMs = resolveTokenExpiry(data, DEFAULT_TOKEN_TTL_MS);
 
       const refreshed = {
         ...credentials,
