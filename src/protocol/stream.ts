@@ -14,6 +14,7 @@ import { resolveQoderIdentity } from "../auth/oauth.js";
 import { getCachedModelConfig, MAX_OUTPUT_TOKENS } from "../catalog.js";
 import { buildAuthHeaders, getMachineId } from "../cosy.js";
 import { getQoderChatURL, getQoderRegionConfig } from "../region.js";
+import { yieldToEventLoop } from "../yield.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
 import { qoderEncodeBodyAsync } from "./encoding.js";
 import { getQoderRunIdentity } from "./run-state.js";
@@ -23,10 +24,6 @@ import { contentToText, transformMessagesForQoder, transformTools } from "./tran
 import { parseQoderCreditsUsage, type QoderCreditsUsage } from "./usage.js";
 
 type QoderAssistantUsage = AssistantMessage["usage"] & QoderCreditsUsage;
-
-function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
-}
 
 /** False only when the host explicitly disabled thinking for this request. */
 function isThinkingRequested(reasoning: unknown): boolean {

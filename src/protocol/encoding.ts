@@ -1,3 +1,5 @@
+import { yieldToEventLoop } from "../yield.js";
+
 const qoderCustomAlphabet = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
 
 const qoderStdAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -22,10 +24,6 @@ export const QODER_ENCODE_CHUNK = 64 * 1024;
 
 function toStdBase64(plaintext: string | Buffer): string {
   return Buffer.isBuffer(plaintext) ? plaintext.toString("base64") : Buffer.from(plaintext).toString("base64");
-}
-
-function yieldToEventLoop(): Promise<void> {
-  return new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 /**
