@@ -79,6 +79,17 @@ describe("oauth autoLoginQoderFromEnvironment", () => {
     expect(getQoderPatForMode("cn")).toBe("pt-cn-456");
   });
 
+  it("trims surrounding whitespace from an env PAT", () => {
+    process.env.QODER_PERSONAL_ACCESS_TOKEN = "  pt-global-123\n";
+    expect(getQoderPatForMode("global")).toBe("pt-global-123");
+  });
+
+  it("skips a blank env PAT and falls through to the next name", () => {
+    process.env.QODER_API_KEY = "   ";
+    process.env.QODER_PERSONAL_ACCESS_TOKEN = "pt-fallback";
+    expect(getQoderPatForMode("global")).toBe("pt-fallback");
+  });
+
   it("does nothing if no PAT in environment", async () => {
     await autoLoginQoderFromEnvironment("qoder-test-provider", "global");
     expect(getCachedCredentials("mock-token", "qoder-test-provider")).toBeNull();
