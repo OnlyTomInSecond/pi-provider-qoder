@@ -178,20 +178,26 @@ export async function autoLoginQoderFromEnvironment(providerID: string, mode: Qo
  * store. pi persists the full OAuthCredentials there on login/refresh and keeps
  * it up to date, so there is no need to maintain a separate credentials cache.
  *
+ * When `accessToken` is given and the stored entry carries a different access
+ * token, null is returned: the stored identity belongs to another account, and
+ * reusing its userID would sign requests as the wrong user. Pass an empty/
+ * undefined token to read whatever entry is stored ("any account").
+ *
  * Note: the auth.json path/shape is a pi internal convention, not a public API.
  * This is best-effort and falls back to null so callers can use placeholders.
  */
-export function getCachedCredentials(_accessToken: string, providerID = "qoder"): QoderCredentials | null {
+export function getCachedCredentials(accessToken?: string, providerID = "qoder"): QoderCredentials | null {
   const auth = readAuthFileCached();
   if (!auth) return null;
   const creds = (auth[providerID] || (providerID === "qoder" ? auth.qoder : null)) as QoderCredentials | null;
-  if (creds?.userID || creds?.access) {
-    if (creds.access && creds.userID) {
-      cacheIdentity(`${providerID}:${creds.access}`, creds);
-    }
-    return creds;
+  if (!(creds?.userID || creds?.access)) return null;
+  // A caller asking for a specific token must not receive another account's
+  // identity; an empty token means "any entry" (used to discover the token).
+  if (accessToken && creds.access && creds.access !== accessToken) return null;
+  if (creds.access && creds.userID) {
+    cacheIdentity(`${providerID}:${creds.access}`, creds);
   }
-  return null;
+  return creds;
 }
 
 /**

@@ -150,3 +150,46 @@ describe("oauth autoLoginQoderFromEnvironment", () => {
     );
   });
 });
+
+describe("getCachedCredentials token matching", () => {
+  const provider = "qoder-token-match";
+  const originalEnv = process.env;
+  let originalAuth: string | undefined;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    clearQoderAuthMemCache();
+    originalAuth = existsSync(AUTH_FILE) ? readFileSync(AUTH_FILE, "utf8") : undefined;
+    const auth = existsSync(AUTH_FILE) ? JSON.parse(readFileSync(AUTH_FILE, "utf8")) : {};
+    auth[provider] = {
+      type: "oauth",
+      access: "stored-token",
+      refresh: "stored-refresh",
+      expires: Date.now() + 3600000,
+      userID: "stored-user",
+      email: "stored@example.com",
+      name: "Stored User",
+      machineID: "stored-machine",
+    };
+    writeFileSync(AUTH_FILE, JSON.stringify(auth), "utf8");
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    if (originalAuth === undefined) rmSync(AUTH_FILE, { force: true });
+    else writeFileSync(AUTH_FILE, originalAuth, "utf8");
+    clearQoderAuthMemCache();
+  });
+
+  it("returns the stored identity for a matching token", () => {
+    expect(getCachedCredentials("stored-token", provider)?.userID).toBe("stored-user");
+  });
+
+  it("returns null when the requested token differs from the stored one", () => {
+    expect(getCachedCredentials("other-token", provider)).toBeNull();
+  });
+
+  it("returns the stored identity for an empty token (any account)", () => {
+    expect(getCachedCredentials("", provider)?.access).toBe("stored-token");
+  });
+});
