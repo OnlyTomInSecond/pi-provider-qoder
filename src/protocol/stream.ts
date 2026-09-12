@@ -190,11 +190,12 @@ export function streamQoder(
 
       // Use a stable session id when pi provides one (per agent session) so
       // the Qoder server can maintain prompt cache affinity across consecutive
-      // requests. Fall back to a random id only when no sessionId is available.
-      const stablePart = stableHash("qoder-session", userID, qoderModel);
+      // requests. The id is only used for server-side affinity, so with a
+      // caller-provided sessionId we can build it directly and skip the
+      // per-request SHA-256; hash only the random fallback into a stable prefix.
       const sessionID = options?.sessionId
-        ? `${stablePart}-${options.sessionId}`
-        : `${stablePart}-${crypto.randomUUID()}`;
+        ? `qoder-session-${userID}-${qoderModel}-${options.sessionId}`
+        : `${stableHash("qoder-session", userID, qoderModel)}-${crypto.randomUUID()}`;
 
       // Qoder's catalog exposes no per-model output cap, so we use the
       // documented upstream ceiling (MAX_OUTPUT_TOKENS = 131072, see models.ts)
