@@ -71,7 +71,7 @@ Qoder credits are billed per account; only the region you log into is affected.
 
 After login, `/model` (or `pi --list-models`) lists what that region offers.
 
-**Catalog source.** At startup and on each new session the provider checks its model cache. If it is missing or older than one hour it re-fetches the authenticated region catalog from `/model/list` and writes a fresh copy to:
+**Catalog source.** At startup and on each new session the provider checks its model cache. If it is missing, older than one hour, or was fetched for a different account it re-fetches the authenticated region catalog from `/model/list` and writes a fresh copy to:
 
 - `~/.pi/agent/qoder-models-cache.json` (global)
 - `~/.pi/agent/qoder-cn-models-cache.json` (China)
@@ -104,7 +104,7 @@ The streamed response is normalized into pi thinking blocks regardless of how th
 | `QODERCN_API_KEY`, `QODERCN_PERSONAL_ACCESS_TOKEN`, `QODERCN_PAT` | China PAT (first non-empty wins). |
 | `QODER_STREAM_IDLE_TIMEOUT_MS` | Stream idle timeout override (default `120000` ms). |
 | `QODER_STREAM_DELTA_INTERVAL_MS` | Minimum gap between streamed text/thinking deltas (default `50` ms). Higher values cut UI CPU on long responses. |
-| `QODER_DEBUG` | When set, log malformed SSE lines that are skipped instead of silently discarding them. |
+| `QODER_DEBUG` | When set, log diagnostics for best-effort failures (catalog refresh, PAT exchange fallthrough, token refresh, userinfo lookup, malformed SSE lines) that are otherwise swallowed. |
 
 ## How it works (protocol notes)
 
