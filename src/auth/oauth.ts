@@ -113,7 +113,9 @@ function readAuthFileCached(): Record<string, unknown> | null {
 /** Return the PAT exposed through the environment for a provider mode. */
 export function getQoderPatForMode(mode: QoderMode): string {
   for (const envName of getQoderRegionConfig(mode).patEnvNames) {
-    const value = process.env[envName];
+    // Trim so a PAT pasted with surrounding whitespace/newlines (common in
+    // shell exports and CI secrets) still exchanges, matching interactiveLogin.
+    const value = process.env[envName]?.trim();
     if (value) return value;
   }
   return "";
