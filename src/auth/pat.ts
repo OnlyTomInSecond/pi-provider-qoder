@@ -1,5 +1,6 @@
 import type { OAuthCredentials } from "@earendil-works/pi-ai";
 import { getMachineId, QODER_CLIENT_TYPE, QODER_OPENAPI_COSY_VERSION } from "../cosy.js";
+import { debugLog } from "../debug.js";
 import { getQoderExchangeURL, getQoderRegionConfig, getQoderUserInfoURL, type QoderMode } from "../region.js";
 import { resolveTokenExpiry } from "./expiry.js";
 
@@ -119,7 +120,9 @@ export async function fetchUserInfo(
       email = info.email || "";
       name = info.name || info.username || "";
     }
-  } catch {}
+  } catch (error) {
+    debugLog("failed to fetch Qoder userinfo", error);
+  }
   return { userID, email, name };
 }
 
