@@ -77,19 +77,22 @@ function registerQoderProvider(pi: ExtensionAPI, mode: QoderMode): void {
 }
 
 /**
- * Rebuild the model cache for `mode` when it is missing or stale (>1h old).
- * Identity comes from the auth file (keyed by token) with region fallbacks, so
- * a registry/startup token and an auth-file record both work. Login/refresh
- * are the other rebuild triggers; this covers startup and the case where the
- * cache was deleted while the token is still valid.
+ * Rebuild the model cache for `mode` when it is missing, stale (>1h old), or
+ * was fetched for a different account. Identity comes from the auth file
+ * (keyed by token) with region fallbacks, so a registry/startup token and an
+ * auth-file record both work. Login/refresh are the other rebuild triggers;
+ * this covers startup and the case where the cache was deleted while the token
+ * is still valid.
  */
 async function refreshQoderModelsCache(mode: QoderMode, accessToken?: string): Promise<void> {
-  if (!isCacheStale(mode)) return;
   const region = getQoderRegionConfig(mode);
   const providerID = region.providerID;
   const token = accessToken ?? getCachedCredentials("", providerID)?.access;
   if (!token) return;
   const creds = getCachedCredentials(token, providerID);
+  // Rebuild when the cache is missing, older than an hour, or was fetched for
+  // a different account.
+  if (!isCacheStale(mode, creds?.userID)) return;
   await updateQoderModelsCache(
     token,
     creds?.userID || "qoder-user",
