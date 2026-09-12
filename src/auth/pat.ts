@@ -2,6 +2,7 @@ import type { OAuthCredentials } from "@earendil-works/pi-ai";
 import { getMachineId, QODER_CLIENT_TYPE, QODER_OPENAPI_COSY_VERSION } from "../cosy.js";
 import { debugLog } from "../debug.js";
 import { getQoderExchangeURL, getQoderRegionConfig, getQoderUserInfoURL, type QoderMode } from "../region.js";
+import { fetchWithRetry } from "../retry.js";
 import { resolveTokenExpiry } from "./expiry.js";
 
 const UA = "pi-provider-qoder";
@@ -100,15 +101,19 @@ export async function fetchUserInfo(
   let email = "";
   let name = "";
   try {
-    const res = await fetch(getQoderUserInfoURL(mode), {
-      headers: {
-        Authorization: `Bearer ${jobToken}`,
-        Accept: "application/json",
-        "User-Agent": UA,
-        "Cosy-Version": QODER_OPENAPI_COSY_VERSION,
-        "Cosy-ClientType": QODER_CLIENT_TYPE,
+    const res = await fetchWithRetry(
+      getQoderUserInfoURL(mode),
+      {
+        headers: {
+          Authorization: `Bearer ${jobToken}`,
+          Accept: "application/json",
+          "User-Agent": UA,
+          "Cosy-Version": QODER_OPENAPI_COSY_VERSION,
+          "Cosy-ClientType": QODER_CLIENT_TYPE,
+        },
       },
-    });
+      { attempts: 2 },
+    );
     if (res.ok) {
       const info = (await res.json()) as {
         id?: string;
