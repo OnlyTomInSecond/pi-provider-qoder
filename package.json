@@ -36,13 +36,13 @@
     ]
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.12",
+    "@biomejs/biome": "2.5.13",
     "@earendil-works/pi-ai": "^0.85.1",
     "@earendil-works/pi-coding-agent": "^0.85.1",
     "esbuild": "^0.28.1",
     "tsx": "^4.23.13",
-    "typescript": "^5.7.0",
-    "vitest": "^4.1.9"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
   },
   "repository": {
     "type": "git",
