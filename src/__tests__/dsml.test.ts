@@ -109,4 +109,28 @@ describe("DsmlToolCallParser", () => {
     expect(events.every((event) => event.type === "text")).toBe(true);
     expect(events.map((event) => (event.type === "text" ? event.text : "")).join("")).toBe(input);
   });
+
+  it("parses a multi-megabyte wrapper in linear time", () => {
+    // A leaked tool call (e.g. a large `write`) used to be re-scanned from the
+    // start on every chunk, flattening the growing block and making this test
+    // take several seconds (quadratic). It must now stay well under the
+    // timeout: the end-marker search only scans each new chunk plus a bounded
+    // tail, and the wrapper is joined once when it closes.
+    const content = "a".repeat(2 * 1024 * 1024);
+    const input =
+      `${START}${INVOKE} name="write">` +
+      `${PARAMETER} name="content" string="true">${content}${PARAMETER_END}` +
+      `${INVOKE_END}${END}`;
+    const parser = new DsmlToolCallParser();
+    const events: ReturnType<DsmlToolCallParser["processChunk"]> = [];
+    for (let index = 0; index < input.length; index += 64) {
+      events.push(...parser.processChunk(input.slice(index, index + 64)));
+    }
+    events.push(...parser.finalize());
+
+    expect(events).toEqual([
+      { type: "tool_start", id: "dsml_call_0", name: "write" },
+      { type: "tool_arguments", id: "dsml_call_0", arguments: JSON.stringify({ content }) },
+    ]);
+  }, 5000);
 });

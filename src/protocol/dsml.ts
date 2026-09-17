@@ -13,6 +13,9 @@ const WRAPPER_ENDS = DSML_TOKENS.flatMap((token) => [`</${token}tool_calls>`, `<
 
 export const MAX_DSML_BUFFER_LENGTH = 8 * 1024 * 1024;
 
+/** Longest wrapper-end marker; bounds the tail that must be re-scanned. */
+const MAX_WRAPPER_END_LENGTH = Math.max(...WRAPPER_ENDS.map((end) => end.length));
+
 /**
  * Incrementally converts DeepSeek-style DSML tool calls to provider-neutral
  * events. The gateway normally converts these to OpenAI `delta.tool_calls`,
@@ -30,23 +33,44 @@ export const MAX_DSML_BUFFER_LENGTH = 8 * 1024 * 1024;
 export class DsmlToolCallParser {
   /** Text-phase bytes not yet emitted (only a split wrapper start is held). */
   private buffer = "";
-  /** Raw bytes since the wrapper start tag, or null while in the text phase. */
-  private block: string | null = null;
+  /** True while a wrapper opener has been seen but not yet closed. */
+  private blockActive = false;
+  /**
+   * Raw wrapper bytes from the opener onward, kept as parts rather than one
+   * growing string. Concatenating into a single rope and then running
+   * `indexOf` on it forces an O(n) flatten on every chunk, which made wrapper
+   * parsing quadratic in the wrapper size (a leaked multi-MB tool argument
+   * blocked the event loop for seconds). Parts are joined at most once, when
+   * the wrapper actually closes.
+   */
+  private blockParts: string[] = [];
+  /** Total character length of {@link blockParts}. */
+  private blockLength = 0;
+  /**
+   * Trailing block characters that can still hold a wrapper-end marker split
+   * across the previous chunk boundary. Each new chunk is searched together
+   * with this bounded tail, so detection stays linear overall.
+   */
+  private scanTail = "";
+  /** Absolute offset of the first wrapper-end marker found, or -1. */
+  private endIndex = -1;
+  /** The wrapper-end marker that matched at {@link endIndex}. */
+  private endMarker = "";
   private callNumber = 0;
 
   processChunk(chunk: string): DsmlParserEvent[] {
     if (!chunk) return [];
-    const pending = (this.block?.length ?? this.buffer.length) + chunk.length;
+    const pending = this.blockLength + this.buffer.length + chunk.length;
     if (pending > MAX_DSML_BUFFER_LENGTH) {
       throw new Error(`Qoder DSML buffer exceeded ${MAX_DSML_BUFFER_LENGTH} characters`);
     }
 
-    // Most reasoning/content chunks are ordinary text. Avoid concatenating and
+    // Most reasoning/content chunks are ordinary text. Avoid buffering and
     // draining the parser when there is no complete or split wrapper marker;
     // the bounded suffix check still preserves wrapper boundaries split across
     // chunks and channels.
     if (
-      this.block === null &&
+      !this.blockActive &&
       this.buffer.length === 0 &&
       !WRAPPER_STARTS.some((candidate) => chunk.includes(candidate)) &&
       longestMarkerSuffix(chunk, WRAPPER_STARTS) === 0
@@ -62,9 +86,9 @@ export class DsmlToolCallParser {
     const events: DsmlParserEvent[] = [];
     // An unterminated wrapper at end of stream is not a tool call: show it
     // verbatim like the malformed-wrapper fallback.
-    if (this.block !== null) {
-      events.push({ type: "text", text: this.block });
-      this.block = null;
+    if (this.blockActive) {
+      events.push({ type: "text", text: this.materializeBlock() });
+      this.resetBlock();
     }
     if (this.buffer) {
       events.push({ type: "text", text: this.buffer });
@@ -77,11 +101,11 @@ export class DsmlToolCallParser {
   private drain(): DsmlParserEvent[] {
     const events: DsmlParserEvent[] = [];
     while (true) {
-      if (this.block !== null) {
+      if (this.blockActive) {
         // Fold anything buffered while waiting for the wrapper end into the
         // block, then try to close it.
         if (this.buffer) {
-          this.block += this.buffer;
+          this.appendBlock(this.buffer);
           this.buffer = "";
         }
         if (!this.tryCloseWrapper(events)) break;
@@ -103,7 +127,7 @@ export class DsmlToolCallParser {
       if (start.index > 0) events.push({ type: "text", text: this.buffer.slice(0, start.index) });
       // Move everything from the wrapper start into the block buffer: the
       // opener, the inner markup, and any later text in this chunk.
-      this.block = this.buffer.slice(start.index);
+      this.startBlock(this.buffer.slice(start.index));
       this.buffer = "";
       return true;
     }
@@ -116,6 +140,49 @@ export class DsmlToolCallParser {
     return false;
   }
 
+  /** Begin a new wrapper block from `raw` (which starts with the opener). */
+  private startBlock(raw: string): void {
+    this.resetBlock();
+    this.blockActive = true;
+    this.appendBlock(raw);
+  }
+
+  /** Forget all wrapper-accumulation state. */
+  private resetBlock(): void {
+    this.blockActive = false;
+    this.blockParts = [];
+    this.blockLength = 0;
+    this.scanTail = "";
+    this.endIndex = -1;
+    this.endMarker = "";
+  }
+
+  /**
+   * Append `chunk` to the wrapper block, searching only the new bytes plus the
+   * bounded scan tail for the wrapper-end marker. Stops searching once the end
+   * is found; the wrapper is then closed by {@link tryCloseWrapper}.
+   */
+  private appendBlock(chunk: string): void {
+    if (!chunk) return;
+    if (this.endIndex === -1) {
+      const haystack = this.scanTail + chunk;
+      const found = findFirst(haystack, WRAPPER_ENDS);
+      if (found.index !== -1) {
+        this.endIndex = this.blockLength - this.scanTail.length + found.index;
+        this.endMarker = found.value;
+      }
+      const keep = Math.min(MAX_WRAPPER_END_LENGTH - 1, haystack.length);
+      this.scanTail = haystack.slice(haystack.length - keep);
+    }
+    this.blockParts.push(chunk);
+    this.blockLength += chunk.length;
+  }
+
+  /** Join the accumulated wrapper parts into one string (once per wrapper). */
+  private materializeBlock(): string {
+    return this.blockParts.length === 1 ? this.blockParts[0] : this.blockParts.join("");
+  }
+
   /**
    * Close the buffered wrapper once its end tag arrived, parsing the inner
    * markup into tool events. Returns false while the wrapper is incomplete;
@@ -123,13 +190,12 @@ export class DsmlToolCallParser {
    * plain text, like the malformed-wrapper fallback.
    */
   private tryCloseWrapper(events: DsmlParserEvent[]): boolean {
-    const block = this.block as string;
+    if (this.endIndex === -1) return false;
+
+    const block = this.materializeBlock();
     // Everything before the first ">" is the wrapper start tag itself.
     const innerStart = block.indexOf(">") + 1;
-    const end = findFirst(block.slice(innerStart), WRAPPER_ENDS);
-    if (end.index === -1) return false;
-
-    const inner = block.slice(innerStart, innerStart + end.index);
+    const inner = block.slice(innerStart, this.endIndex);
     const parsed = parseToolCalls(inner, this.callNumber);
     if (parsed) {
       this.callNumber = parsed.callNumber;
@@ -137,11 +203,12 @@ export class DsmlToolCallParser {
     } else {
       // Malformed: surface the raw wrapper so the user still sees the model's
       // intent instead of silently dropping the block.
-      events.push({ type: "text", text: block.slice(0, innerStart + end.index + end.value.length) });
+      events.push({ type: "text", text: block.slice(0, this.endIndex + this.endMarker.length) });
     }
 
-    this.block = null;
-    this.buffer = block.slice(innerStart + end.index + end.value.length);
+    const trailing = block.slice(this.endIndex + this.endMarker.length);
+    this.resetBlock();
+    this.buffer = trailing;
     return true;
   }
 }
