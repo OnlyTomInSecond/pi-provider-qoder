@@ -390,7 +390,9 @@ function getConfigIndex(mode: QoderMode): Map<string, QoderModelEntry> {
       if (!entry || typeof entry !== "object" || !entry.display_name) continue;
       const displayId = toQoderModelId(entry.display_name);
       if (displayId && displayId !== "QoderModel" && !index.has(displayId)) {
-        index.set(displayId, entry as QoderModelEntry);
+        // Fold in the max-context default once, at index build time, instead of
+        // rebuilding context_config on every request in getCachedModelConfig.
+        index.set(displayId, withMaxContextAsDefault(entry as QoderModelEntry));
       }
     }
   }
@@ -402,7 +404,7 @@ export function getCachedModelConfig(modelId: string, mode: QoderMode): QoderMod
   // O(1) lookup against the memoized displayId index (no per-request scan of the
   // whole config list, which could be hundreds of entries).
   const config = getConfigIndex(mode).get(modelId);
-  if (config) return withMaxContextAsDefault(config);
+  if (config) return config;
 
   const staticModel = getStaticSeedIndex(mode, "id").get(modelId);
   if (staticModel) {
