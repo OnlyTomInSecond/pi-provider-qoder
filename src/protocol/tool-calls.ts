@@ -1,4 +1,4 @@
-import type { AssistantMessage, AssistantMessageEventStream, ToolCall } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEventStream, JsonObject, ToolCall } from "@earendil-works/pi-ai";
 
 export type ToolCallStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
 
@@ -141,11 +141,11 @@ export class ToolCallAccumulator {
   }
 }
 
-function parseArguments(value: string): Record<string, unknown> {
+function parseArguments(value: string): JsonObject {
   try {
     const parsed: unknown = JSON.parse(value || "{}");
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+      return parsed as JsonObject;
     }
   } catch {}
   return {};
