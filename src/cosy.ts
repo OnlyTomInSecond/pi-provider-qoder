@@ -52,12 +52,18 @@ export interface CosyCredentials {
   machineID?: string;
 }
 
+/**
+ * Parsed once at module load: `crypto.publicEncrypt` re-parses and validates a
+ * PEM string on every call, which is pure overhead on the per-request COSY
+ * header path. A KeyObject is immutable, so sharing one is safe.
+ */
+const parsedRSAPublicKey = crypto.createPublicKey(qoderRSAPublicKey);
+
 function rsaEncryptBase64(data: Buffer | string): string {
-  const key = {
-    key: qoderRSAPublicKey,
-    padding: crypto.constants.RSA_PKCS1_PADDING,
-  };
-  const encrypted = crypto.publicEncrypt(key, typeof data === "string" ? Buffer.from(data) : data);
+  const encrypted = crypto.publicEncrypt(
+    { key: parsedRSAPublicKey, padding: crypto.constants.RSA_PKCS1_PADDING },
+    typeof data === "string" ? Buffer.from(data) : data,
+  );
   return encrypted.toString("base64");
 }
 
