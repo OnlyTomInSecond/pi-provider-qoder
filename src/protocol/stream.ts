@@ -3,12 +3,15 @@ import {
   type Api,
   type AssistantMessage,
   type AssistantMessageEventStream,
-  type Context,
   clampThinkingLevel,
   createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   type Model,
   type SimpleStreamOptions,
   type ThinkingContent,
+  type TranscriptContext,
+  withoutInitialSystemMessage,
 } from "@earendil-works/pi-ai";
 import { resolveQoderIdentity } from "../auth/oauth.js";
 import { getCachedModelConfig, MAX_OUTPUT_TOKENS } from "../catalog.js";
@@ -59,7 +62,7 @@ const MAX_SSE_BUFFER_LENGTH = 8 * 1024 * 1024;
 
 export function streamQoder(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
@@ -171,11 +174,18 @@ export function streamQoder(
 
       await yieldToEventLoop();
       throwIfAborted();
-      const normalizedMessages = transformMessagesForQoder(context.messages);
+      // 0.86.0+ passes a normalized TranscriptContext: the system prompt and
+      // tool declarations are folded into the transcript's leading system
+      // message instead of being top-level fields. Read them back with the
+      // transcript helpers, and strip that system message from the list before
+      // mapping it to Qoder's OpenAI-shaped messages (Qoder carries the prompt
+      // in a separate top-level field, not as a `system` role message).
+      const transcriptMessages = withoutInitialSystemMessage(context.messages);
+      const normalizedMessages = transformMessagesForQoder(transcriptMessages);
       // OMP may supply the system prompt as a single-element content array;
       // Qoder MessagesInputDto#content is a String and rejects an array with
       // "Execution failed: set property ... MessagesInputDto#content". Normalize.
-      const systemText = contentToText(context.systemPrompt || "", "\n");
+      const systemText = contentToText(getCurrentSystemPrompt(context.messages), "\n");
 
       let lastUserText = "";
       for (let i = normalizedMessages.length - 1; i >= 0; i--) {
@@ -204,7 +214,8 @@ export function streamQoder(
         maxTokens = options.maxTokens;
       }
 
-      const toolsRaw = context.tools && context.tools.length > 0 ? transformTools(context.tools) : undefined;
+      const currentTools = getCurrentTools(context.messages);
+      const toolsRaw = currentTools.length > 0 ? transformTools(currentTools) : undefined;
       // Map pi's thinking level (options.reasoning) to Qoder's request fields.
       // Confirmed from @qoder-ai/qodercli: the chat body carries `reasoning_effort`
       // ("none"|"low"|"medium"|"high"|"xhigh"|"max") and `enable_thinking` (bool)

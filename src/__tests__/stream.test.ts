@@ -6,7 +6,9 @@ import type {
   Context,
   Model,
   ToolCall,
+  TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { streamQoder } from "../protocol/stream.js";
 import { loadLiveFixture } from "./live-fixture.js";
@@ -97,12 +99,15 @@ function makeModel(provider = "qoder", id = "Lite"): Model<Api> {
   return { id, api: "qoder-api" as Api, provider } as Model<Api>;
 }
 
-function makeContext(): Context {
-  return {
+function makeContext(): TranscriptContext {
+  // 0.86.0+ providers receive a normalized TranscriptContext where the system
+  // prompt and tools live in a leading system message. normalizeContext folds
+  // the legacy Context shape into that form, matching what pi passes at runtime.
+  return normalizeContext({
     systemPrompt: "test",
     messages: [{ role: "user", content: "hi" }],
     tools: [],
-  } as unknown as Context;
+  } as unknown as Context);
 }
 
 async function consume(stream: AssistantMessageEventStream): Promise<AssistantMessageEvent[]> {
@@ -135,6 +140,49 @@ describe("streamQoder", () => {
     expect(msg.stopReason).toBe("stop");
     const text = msg.content.find((c) => c.type === "text");
     expect(text && "text" in text ? text.text : "").toBe("OK");
+  });
+
+  it("forwards tools and system prompt folded into the normalized transcript", async () => {
+    // Regression for the 0.86.0 TranscriptContext migration: the system prompt
+    // and tool declarations no longer arrive as top-level Context fields but as
+    // a leading system message. The provider must read them back with
+    // getCurrentSystemPrompt/getCurrentTools, or the model gets no tools and
+    // cannot read files or run commands.
+    globalThis.fetch = mockFetch(SUCCESS_SSE);
+    const context = normalizeContext({
+      systemPrompt: "you are helpful",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        {
+          name: "read",
+          description: "Read a file",
+          parameters: { type: "object", properties: { path: { type: "string" } } },
+        },
+      ],
+    } as unknown as Context);
+
+    await consume(streamQoder(makeModel("qoder", "Lite"), context, { apiKey: "fake" }));
+
+    const init = vi.mocked(globalThis.fetch).mock.calls[0][1];
+    const custom = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
+    const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const encoded = Buffer.from(init?.body as Uint8Array).toString("utf8");
+    const rearranged = [...encoded]
+      .map((character) => (character === "$" ? "=" : standard[custom.indexOf(character)] || character))
+      .join("");
+    const third = Math.floor(rearranged.length / 3);
+    const base64 =
+      rearranged.slice(rearranged.length - third) +
+      rearranged.slice(third, rearranged.length - third) +
+      rearranged.slice(0, third);
+    const body = JSON.parse(Buffer.from(base64, "base64").toString("utf8")) as {
+      messages: Array<{ role: string; content: string }>;
+      tools: Array<{ type: string; function: { name: string } }>;
+    };
+
+    expect(body.messages[0]).toEqual({ role: "system", content: "you are helpful" });
+    expect(body.tools).toHaveLength(1);
+    expect(body.tools[0].function.name).toBe("read");
   });
 
   it("sends the internal upstream key for a friendly model id", async () => {
