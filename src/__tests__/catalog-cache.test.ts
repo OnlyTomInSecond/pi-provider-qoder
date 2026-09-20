@@ -252,6 +252,36 @@ describe("Qoder model cache", () => {
     expect(cache.models[0].contextWindow).toBe(200000);
   });
 
+  it("resolves the largest context option as default through getCachedModelConfig", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            chat: [
+              {
+                key: "gm51model",
+                enable: true,
+                display_name: "GLM 5.2",
+                context_config: {
+                  small: { token_count: 200000, is_default: true },
+                  large: { token_count: 400000, is_default: false },
+                },
+              },
+            ],
+          }),
+      }),
+    );
+
+    await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
+
+    // The transform is memoized on the config index; assert it still applies.
+    const config = getCachedModelConfig("GLM5.2", "global");
+    expect(config?.context_config?.large?.is_default).toBe(true);
+    expect(config?.context_config?.small?.is_default).toBe(false);
+  });
+
   it("exposes the catalog price_factor as model metadata", async () => {
     vi.stubGlobal(
       "fetch",
