@@ -5,8 +5,8 @@ import {
   type AssistantMessageEventStream,
   clampThinkingLevel,
   createAssistantMessageEventStream,
-  getCurrentSystemPrompt,
-  getCurrentTools,
+  getCurrentSystemMessage,
+  getSystemMessageText,
   type Model,
   type SimpleStreamOptions,
   type ThinkingContent,
@@ -104,7 +104,10 @@ export function streamQoder(
   const pushEvent = (event: QoderStreamEvent): void => {
     if (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_delta") {
       if (pendingDelta && pendingDelta.type === event.type && pendingDelta.contentIndex === event.contentIndex) {
-        pendingDelta = { ...pendingDelta, delta: pendingDelta.delta + event.delta };
+        // Mutate in place rather than spreading a new object on every merged
+        // delta: coalescing is the hottest path in a streamed response and the
+        // object has no other references consumers rely on.
+        pendingDelta.delta += event.delta;
         return;
       }
       // A different block/type must keep its ordering, so flush unconditionally.
@@ -182,10 +185,11 @@ export function streamQoder(
       // in a separate top-level field, not as a `system` role message).
       const transcriptMessages = withoutInitialSystemMessage(context.messages);
       const normalizedMessages = transformMessagesForQoder(transcriptMessages);
-      // OMP may supply the system prompt as a single-element content array;
-      // Qoder MessagesInputDto#content is a String and rejects an array with
-      // "Execution failed: set property ... MessagesInputDto#content". Normalize.
-      const systemText = contentToText(getCurrentSystemPrompt(context.messages), "\n");
+      // Resolve the current prompt and tool set in a single transcript pass:
+      // getCurrentSystemPrompt() would re-walk the messages (and re-resolve the
+      // tools internally) on top of the getCurrentTools() call below.
+      const currentSystem = getCurrentSystemMessage(context.messages);
+      const systemText = currentSystem ? getSystemMessageText(currentSystem) : "";
 
       let lastUserText = "";
       for (let i = normalizedMessages.length - 1; i >= 0; i--) {
@@ -214,7 +218,7 @@ export function streamQoder(
         maxTokens = options.maxTokens;
       }
 
-      const currentTools = getCurrentTools(context.messages);
+      const currentTools = currentSystem?.toolsAdded ?? [];
       const toolsRaw = currentTools.length > 0 ? transformTools(currentTools) : undefined;
       // Map pi's thinking level (options.reasoning) to Qoder's request fields.
       // Confirmed from @qoder-ai/qodercli: the chat body carries `reasoning_effort`
