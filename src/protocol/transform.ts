@@ -106,9 +106,11 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
   const deferredImageMessages: QoderMessage[] = [];
 
   const flushDeferredImages = (): void => {
-    while (deferredImageMessages.length > 0) {
-      normalizedMessages.push(deferredImageMessages.shift()!);
-    }
+    // Append the whole batch at once: shift() in a loop is O(k^2) and the
+    // non-null assertion it needed is flagged by the linter.
+    if (deferredImageMessages.length === 0) return;
+    normalizedMessages.push(...deferredImageMessages);
+    deferredImageMessages.length = 0;
   };
 
   // Pre-scan declarations so an orphan result that appears before a valid
