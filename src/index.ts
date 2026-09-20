@@ -128,17 +128,22 @@ export default async function (pi: ExtensionAPI) {
   // Refresh once per session at startup if the cache is missing or stale,
   // rather than on every message in the stream hot path.
   pi.on("session_start", async (_event, ctx) => {
-    for (const mode of QODER_MODES) {
-      try {
-        const providerID = getQoderRegionConfig(mode).providerID;
-        const accessToken = await ctx.modelRegistry.getApiKeyForProvider(providerID);
-        if (!accessToken) continue;
-        await refreshQoderModelsCache(mode, accessToken);
-      } catch (error) {
-        // Best-effort: fall back to the existing cache / static models.
-        debugLog(`session_start model catalog refresh failed for ${mode}`, error);
-      }
-    }
+    // The two regions are independent (own token, cache file, base URL), so
+    // refresh them concurrently instead of letting a slow catalog fetch for one
+    // delay the other.
+    await Promise.all(
+      QODER_MODES.map(async (mode) => {
+        try {
+          const providerID = getQoderRegionConfig(mode).providerID;
+          const accessToken = await ctx.modelRegistry.getApiKeyForProvider(providerID);
+          if (!accessToken) return;
+          await refreshQoderModelsCache(mode, accessToken);
+        } catch (error) {
+          // Best-effort: fall back to the existing cache / static models.
+          debugLog(`session_start model catalog refresh failed for ${mode}`, error);
+        }
+      }),
+    );
   });
 
   for (const mode of QODER_MODES) registerQoderProvider(pi, mode);
