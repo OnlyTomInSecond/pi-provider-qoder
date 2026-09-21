@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Resolve the user's home directory for pi/qoder state paths.
@@ -9,4 +10,11 @@ import { homedir } from "node:os";
  */
 export function getHomeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || homedir();
+}
+
+export function getPiAgentDir(): string {
+  const configured = process.env.PI_CODING_AGENT_DIR;
+  if (configured === "~") return getHomeDir();
+  if (configured?.startsWith("~/")) return join(getHomeDir(), configured.slice(2));
+  return configured || join(getHomeDir(), ".pi", "agent");
 }

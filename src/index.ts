@@ -109,9 +109,7 @@ export default async function (pi: ExtensionAPI) {
   // URLs), so initialize them concurrently to cut startup time in half instead
   // of chaining their network round-trips sequentially. Each mode keeps its own
   // failure boundary so one bad region cannot block the other. They share
-  // auth.json but write different providerID keys via the fully-synchronous
-  // saveCredentialsToAuthFile (no await inside), so the writes cannot
-  // interleave and there is no lost-update risk.
+  // auth.json; the host credential store serializes updates under its lock.
   await Promise.all(
     QODER_MODES.map(async (mode) => {
       const providerID = getQoderRegionConfig(mode).providerID;

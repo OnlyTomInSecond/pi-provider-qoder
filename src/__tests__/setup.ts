@@ -14,4 +14,5 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "pi-provider-qoder-test-"));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
+delete process.env.PI_CODING_AGENT_DIR;
 mkdirSync(join(home, ".pi", "agent"), { recursive: true });
