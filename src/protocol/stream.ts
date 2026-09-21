@@ -61,6 +61,20 @@ type QoderDeltaEvent = Extract<QoderStreamEvent, { type: "text_delta" | "thinkin
 const QODER_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const MAX_SSE_BUFFER_LENGTH = 8 * 1024 * 1024;
 
+function mapFinishReason(reason: string): "stop" | "length" | "toolUse" {
+  switch (reason) {
+    case "stop":
+      return "stop";
+    case "length":
+      return "length";
+    case "tool_calls":
+    case "function_call":
+      return "toolUse";
+    default:
+      throw new Error(`Qoder generation ended with ${reason}`);
+  }
+}
+
 export function streamQoder(
   model: Model<Api>,
   context: TranscriptContext,
@@ -82,7 +96,7 @@ export function streamQoder(
       totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
-    stopReason: "stop",
+    stopReason: "pending",
     timestamp: Date.now(),
   };
 
@@ -470,16 +484,21 @@ export function streamQoder(
 
       while (!sawDone) {
         const { done, value } = await reader.read();
-        if (done) break;
-        resetIdleTimer();
+        throwIfAborted();
+        if (!done) resetIdleTimer();
 
-        buffer += decoder.decode(value, { stream: true });
+        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
         if (buffer.length > MAX_SSE_BUFFER_LENGTH && !buffer.includes("\n")) {
           throw new Error(`Qoder SSE buffer exceeded ${MAX_SSE_BUFFER_LENGTH} characters without a complete line`);
         }
 
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
+        // A final data line need not end with a newline. Decode it before EOF validation.
+        if (done && buffer) {
+          lines.push(buffer);
+          buffer = "";
+        }
         if (buffer.length > MAX_SSE_BUFFER_LENGTH) {
           throw new Error(`Qoder SSE buffer exceeded ${MAX_SSE_BUFFER_LENGTH} characters without a complete line`);
         }
@@ -521,6 +540,10 @@ export function streamQoder(
             if (!innerStr) continue;
 
             const inner = JSON.parse(innerStr);
+            if (inner.error || (inner.code && inner.message && !inner.choices)) {
+              const error = inner.error ?? inner;
+              throw new Error(`Qoder upstream error: ${typeof error === "string" ? error : JSON.stringify(error)}`);
+            }
             if (inner.id) output.responseId = inner.id as string;
             if (inner.model) output.responseModel = inner.model as string;
             if (inner.usage) {
@@ -591,24 +614,27 @@ export function streamQoder(
               }
 
               if (choice.finish_reason) {
-                // Preserve the real upstream finish_reason (e.g. "length",
-                // "content_filter") instead of forcing "stop" later.
-                output.stopReason = choice.finish_reason as AssistantMessage["stopReason"];
+                output.rawStopReason = String(choice.finish_reason);
+                output.stopReason = mapFinishReason(output.rawStopReason);
               }
             }
           } catch (e) {
-            // A single malformed SSE line shouldn't kill the stream — skip it.
-            // But a genuine upstream error (thrown below) must propagate to the
-            // outer catch and surface as stopReason="error", not be swallowed.
-            if (e instanceof SyntaxError) {
-              if (process.env.QODER_DEBUG) {
-                console.error("[pi-provider-qoder] skipping malformed SSE line:", dataStr.slice(0, 200));
-              }
-              continue;
-            }
+            // Skipping a broken data event could silently corrupt text or tool JSON.
+            if (e instanceof SyntaxError) throw new Error("Malformed Qoder SSE data");
             throw e;
           }
         }
+        if (done) break;
+      }
+
+      throwIfAborted();
+      if (output.stopReason === "pending") {
+        if (!sawDone) throw new Error("Qoder stream ended before a terminal event (unexpected EOF)");
+        // Some gateway variants send only [DONE], without a finish_reason.
+        output.stopReason = "stop";
+      }
+      if (output.stopReason === "length" && output.content.some((block) => block.type === "toolCall")) {
+        throw new Error("Qoder tool call was truncated by the output token limit");
       }
 
       // The reader is cancelled in finally so normal completion, parsing errors,
@@ -631,13 +657,15 @@ export function streamQoder(
       const hasToolCalls = toolCalls.finalize();
       if (hasToolCalls) {
         output.stopReason = "toolUse";
+      } else if (output.stopReason === "toolUse") {
+        throw new Error("Qoder finished with tool_calls but returned no tool calls");
       }
-      // Otherwise keep whatever finish_reason set upstream (defaults to "stop").
-      // Never overwrite a meaningful finish_reason ("length", "content_filter",
-      // ...) with "stop".
+      if (output.stopReason === "error" || output.stopReason === "aborted") {
+        throw new Error(output.errorMessage || "Qoder generation failed");
+      }
       pushEvent({
         type: "done",
-        reason: output.stopReason as Extract<AssistantMessage["stopReason"], "stop" | "length" | "toolUse">,
+        reason: output.stopReason,
         message: output,
       });
       stream.end();
