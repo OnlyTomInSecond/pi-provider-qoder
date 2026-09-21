@@ -1,14 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { isCacheStale, updateQoderModelsCache } from "../catalog.js";
 import { getMachineId } from "../cosy.js";
 import { debugLog } from "../debug.js";
-import { getHomeDir } from "../home.js";
 import { getQoderRefreshURL, getQoderRegionConfig, type QoderMode } from "../region.js";
 import { DEFAULT_TOKEN_TTL_MS, resolveTokenExpiry } from "./expiry.js";
 import { interactiveLogin } from "./login.js";
 import { credentialsFromPat, decodePatRefresh, fetchUserInfo, isPatRefresh } from "./pat.js";
+import { readAuthFile, storeEnvironmentCredentials } from "./storage.js";
 
 export interface QoderCredentials extends OAuthCredentials {
   userID: string;
@@ -17,30 +15,9 @@ export interface QoderCredentials extends OAuthCredentials {
   machineID: string;
 }
 
-interface AuthStorageLike {
-  create?: () => { set?: (providerID: string, credentials: unknown) => void };
-}
+export type QoderIdentity = Pick<QoderCredentials, "userID" | "email" | "name" | "machineID">;
 
-/**
- * Lazily load the host's `AuthStorage`. A static import of
- * `@earendil-works/pi-coding-agent` pulls in the package's entire module graph
- * (measured ~300ms per process start), so it is deferred: only env-PAT
- * auto-login consults it. Hosts that do not export a usable `AuthStorage` fall
- * back to writing auth.json directly, which is what pi itself reads.
- */
-let authStoragePromise: Promise<AuthStorageLike | undefined> | undefined;
-
-function loadHostAuthStorage(): Promise<AuthStorageLike | undefined> {
-  authStoragePromise ??= import("@earendil-works/pi-coding-agent")
-    .then((mod) => (mod as unknown as { AuthStorage?: AuthStorageLike }).AuthStorage)
-    .catch((error) => {
-      debugLog("host AuthStorage unavailable; using auth.json directly", error);
-      return undefined;
-    });
-  return authStoragePromise;
-}
-
-const identityCache = new Map<string, QoderCredentials>();
+const identityCache = new Map<string, QoderIdentity>();
 
 /** Cap the identity memo so long sessions with many token refreshes stay bounded. */
 const MAX_IDENTITY_CACHE = 32;
@@ -50,9 +27,10 @@ const MAX_IDENTITY_CACHE = 32;
  * existing key refreshes its recency (LRU), and a token refresh produces a new
  * key each time, so the oldest (stale) entries fall off first.
  */
-function cacheIdentity(key: string, creds: QoderCredentials): void {
+function cacheIdentity(key: string, creds: QoderIdentity): void {
   identityCache.delete(key);
-  identityCache.set(key, creds);
+  const { userID, email, name, machineID } = creds;
+  identityCache.set(key, { userID, email, name, machineID });
   if (identityCache.size <= MAX_IDENTITY_CACHE) return;
   const oldest = identityCache.keys().next().value;
   if (oldest !== undefined) identityCache.delete(oldest);
@@ -76,38 +54,9 @@ export function hasQoderIdentityForTest(key: string): boolean {
 /** Maximum identities kept in the memo. Exposed for tests only. */
 export const MAX_IDENTITY_CACHE_FOR_TEST = MAX_IDENTITY_CACHE;
 
-function getAuthFilePath(): string {
-  return join(getHomeDir(), ".pi", "agent", "auth.json");
-}
-
-/** Memoized parse of auth.json; invalidated on save. undefined = not loaded. */
-let authFileMem: { path: string; data: Record<string, unknown> } | null | undefined;
-
-/** Clear process-memory auth caches (used by tests that mutate auth.json). */
+/** Clear process-memory identities. Authentication storage is never memoized here. */
 export function clearQoderAuthMemCache(): void {
-  authFileMem = undefined;
   identityCache.clear();
-}
-
-function readAuthFileCached(): Record<string, unknown> | null {
-  const authPath = getAuthFilePath();
-  if (authFileMem !== undefined) {
-    if (authFileMem === null) return null;
-    if (authFileMem.path === authPath) return authFileMem.data;
-  }
-  if (!existsSync(authPath)) {
-    authFileMem = null;
-    return null;
-  }
-  try {
-    const data = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, unknown>;
-    authFileMem = { path: authPath, data };
-    return data;
-  } catch (error) {
-    debugLog(`failed to parse ${authPath}`, error);
-    authFileMem = null;
-    return null;
-  }
 }
 
 /** Return the PAT exposed through the environment for a provider mode. */
@@ -121,27 +70,6 @@ export function getQoderPatForMode(mode: QoderMode): string {
   return "";
 }
 
-function saveCredentialsToAuthFile(providerID: string, credentials: OAuthCredentials): void {
-  try {
-    const authPath = getAuthFilePath();
-    const dir = dirname(authPath);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true, mode: 0o700 });
-    }
-    const existing = readAuthFileCached();
-    const auth: Record<string, unknown> = existing ? { ...existing } : {};
-    auth[providerID] = { type: "oauth", ...credentials };
-    writeFileSync(authPath, JSON.stringify(auth, null, 2), { encoding: "utf-8", mode: 0o600 });
-    authFileMem = { path: authPath, data: auth };
-    const q = credentials as QoderCredentials;
-    if (q.access && q.userID) {
-      cacheIdentity(`${providerID}:${q.access}`, q);
-    }
-  } catch (err) {
-    console.error(`[pi-provider-qoder] Failed to write auth storage for ${providerID}:`, err);
-  }
-}
-
 /** Exchange an environment PAT before pi resolves its initial model. */
 export async function autoLoginQoderFromEnvironment(providerID: string, mode: QoderMode): Promise<void> {
   const pat = getQoderPatForMode(mode);
@@ -153,21 +81,9 @@ export async function autoLoginQoderFromEnvironment(providerID: string, mode: Qo
   // account's credentials.
   const credentials = await credentialsFromPat(pat, mode);
 
-  const hostAuthStorage = await loadHostAuthStorage();
-  if (typeof hostAuthStorage?.create === "function") {
-    try {
-      const authStorage = hostAuthStorage.create();
-      if (typeof authStorage?.set !== "function") throw new Error("AuthStorage has no set()");
-      authStorage.set(providerID, { type: "oauth", ...credentials });
-    } catch (error) {
-      debugLog("AuthStorage.set failed; writing auth.json directly", error);
-      saveCredentialsToAuthFile(providerID, credentials);
-    }
-  } else {
-    saveCredentialsToAuthFile(providerID, credentials);
-  }
-
+  await storeEnvironmentCredentials(providerID, credentials);
   const qCreds = credentials as QoderCredentials;
+  if (qCreds.userID) cacheIdentity(`${providerID}:${qCreds.access}`, qCreds);
 
   // Refresh the model catalog before the provider is registered only when the
   // cached list is stale (>1h) or belongs to a different account, mirroring
@@ -195,8 +111,13 @@ export async function autoLoginQoderFromEnvironment(providerID: string, mode: Qo
  * This is best-effort and falls back to null so callers can use placeholders.
  */
 export function getCachedCredentials(accessToken?: string, providerID = "qoder"): QoderCredentials | null {
-  const auth = readAuthFileCached();
-  if (!auth) return null;
+  let auth: Record<string, unknown>;
+  try {
+    auth = readAuthFile();
+  } catch (error) {
+    debugLog("failed to read auth storage", error);
+    return null;
+  }
   const creds = (auth[providerID] || (providerID === "qoder" ? auth.qoder : null)) as QoderCredentials | null;
   if (!(creds?.userID || creds?.access)) return null;
   // A caller asking for a specific token must not receive another account's
@@ -214,17 +135,20 @@ export function getCachedCredentials(accessToken?: string, providerID = "qoder")
  * ~/.pi/agent/auth.json, so the provider-side cache is frequently empty and the
  * COSY payload would fall back to uid "qoder-user" -> Qoder CN rejects it with
  * "Login expired" (105). Fetch the identity from the job token when the cache
- * misses (in-memory cached), and persist it so later requests skip the fetch.
+ * misses. Memoize identity only; never write synthetic credentials to auth.json.
  */
 export async function resolveQoderIdentity(
   accessToken: string,
   providerID: string,
   mode: QoderMode,
-): Promise<QoderCredentials> {
+): Promise<QoderIdentity> {
   const region = getQoderRegionConfig(mode);
   const cacheKey = `${providerID}:${accessToken}`;
   const mem = identityCache.get(cacheKey);
-  if (mem?.userID) return mem;
+  if (mem?.userID) {
+    cacheIdentity(cacheKey, mem);
+    return mem;
+  }
 
   const cached = getCachedCredentials(accessToken, providerID);
   if (cached?.userID) {
@@ -234,17 +158,14 @@ export async function resolveQoderIdentity(
 
   const info = await fetchUserInfo(accessToken, mode);
   const machineID = getMachineId();
-  const creds: QoderCredentials = {
-    access: accessToken,
+  const creds: QoderIdentity = {
     userID: info.userID || "qoder-user",
     email: info.email || region.userEmailFallback,
     name: info.name || region.userNameFallback,
     machineID,
-    refresh: "",
-    expires: 0,
   };
-  cacheIdentity(cacheKey, creds);
-  saveCredentialsToAuthFile(providerID, creds);
+  // Failed profile lookups must be retried, not permanently cached as a placeholder.
+  if (info.userID) cacheIdentity(cacheKey, creds);
   return creds;
 }
 
@@ -263,11 +184,8 @@ export async function loginQoderForMode(callbacks: OAuthLoginCallbacks, mode: Qo
       updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode).catch((error) =>
         debugLog("model catalog refresh after PAT exchange failed", error),
       );
-      // Persist the resolved identity locally. OMP (17.x) stores login
-      // credentials in its own agent.db, not in ~/.pi/agent/auth.json, so
-      // without this the chat COSY payload would fall back to uid "qoder-user"
-      // and Qoder CN rejects it with "Login expired" (105).
-      saveCredentialsToAuthFile(providerID, creds);
+      // The host persists credentials (auth.json in pi, agent.db in OMP).
+      if (qCreds.userID) cacheIdentity(`${providerID}:${qCreds.access}`, qCreds);
       return creds;
     } catch (error) {
       debugLog("environment PAT exchange failed; falling back to interactive login", error);
@@ -287,8 +205,8 @@ export async function loginQoderForMode(callbacks: OAuthLoginCallbacks, mode: Qo
     debugLog("failed to start model catalog refresh after login", error);
   }
 
-  // Persist the resolved identity locally (see note above).
-  saveCredentialsToAuthFile(providerID, creds);
+  const identity = creds as QoderCredentials;
+  if (identity.userID) cacheIdentity(`${providerID}:${creds.access}`, identity);
   return creds;
 }
 

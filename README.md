@@ -60,7 +60,7 @@ A job token is short-lived; when it nears expiry the provider transparently refr
 
 ### Credential storage
 
-Credentials and identity are stored under `~/.pi/agent/`:
+Credentials are managed by the host (pi uses `~/.pi/agent/`, or `PI_CODING_AGENT_DIR`; OMP uses its own store). Identity lookups are cached only in memory and never overwrite credentials:
 
 - `auth.json` — the exchanged credentials (per provider), plus the resolved user identity (`userID`/`email`/`name`/`machineID`).
 - The machine id used for COSY headers is read from `~/.qoder/.auth/machine_id` or, if absent, `~/.pi/agent/qoder-machine-id` (created if missing).
