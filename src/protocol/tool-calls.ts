@@ -71,10 +71,17 @@ export class ToolCallAccumulator {
   }
 
   finalize(): boolean {
+    // Validate the entire batch before exposing any completed executable call.
+    const parsed = new Map<ToolCallState, JsonObject>();
+    for (const state of this.ordered) {
+      if (!state.emittedStart && !state.arguments) continue;
+      if (!state.id || !state.name) throw new Error("Incomplete Qoder tool call identity");
+      parsed.set(state, parseArguments(state.arguments));
+    }
     for (const state of this.ordered) {
       if (!state.emittedStart || state.emittedEnd) continue;
       state.emittedEnd = true;
-      const args = parseArguments(state.arguments);
+      const args = parsed.get(state) ?? {};
       const block = this.output.content[state.contentIndex] as ToolCall;
       block.arguments = args;
       this.emitEvent({
@@ -148,5 +155,5 @@ function parseArguments(value: string): JsonObject {
       return parsed as JsonObject;
     }
   } catch {}
-  return {};
+  throw new Error("Invalid or truncated Qoder tool call arguments");
 }

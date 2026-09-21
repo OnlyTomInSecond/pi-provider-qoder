@@ -277,6 +277,65 @@ describe("streamQoder", () => {
     expect(events.find((e) => e.type === "done")).toBeUndefined();
   });
 
+  it.each(["", sseEnvelope(chunk({ content: "partial" }))])("rejects premature EOF (%s)", async (sse) => {
+    globalThis.fetch = mockFetch(sse);
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: { stopReason: "error", errorMessage: expect.stringContaining("unexpected EOF") },
+    });
+    expect(events.some((event) => event.type === "done")).toBe(false);
+  });
+
+  it.each(["stop", "length"])("accepts a terminal %s chunk without a trailing newline or sentinel", async (reason) => {
+    globalThis.fetch = mockFetch(sseEnvelope(finishChunk(reason)).trimEnd());
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    expect(events.at(-1)).toMatchObject({ type: "done", reason, message: { rawStopReason: reason } });
+  });
+
+  it.each(["content_filter", "unexpected_reason"])(
+    "normalizes %s to an error, preserving the raw reason",
+    async (reason) => {
+      globalThis.fetch = mockFetch(sseEnvelope(finishChunk(reason)) + DONE_SSE);
+      const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+      expect(events.at(-1)).toMatchObject({ type: "error", reason: "error", error: { rawStopReason: reason } });
+    },
+  );
+
+  it("rejects malformed data even when followed by DONE", async () => {
+    globalThis.fetch = mockFetch(`data: {broken\n\n${DONE_SSE}`);
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    expect(events.at(-1)).toMatchObject({ type: "error", error: { errorMessage: "Malformed Qoder SSE data" } });
+  });
+
+  it("surfaces errors carried inside a successful envelope", async () => {
+    globalThis.fetch = mockFetch(sseEnvelope({ error: { message: "context_length_exceeded" } }) + DONE_SSE);
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: { errorMessage: expect.stringContaining("context_length_exceeded") },
+    });
+  });
+
+  it.each(["tool_calls", "length"])("never executes truncated tool arguments on %s", async (reason) => {
+    globalThis.fetch = mockFetch(
+      sseEnvelope(
+        chunk({ tool_calls: [{ index: 0, id: "call", function: { name: "bash", arguments: '{"command":' } }] }),
+      ) +
+        sseEnvelope(finishChunk(reason)) +
+        DONE_SSE,
+    );
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some((event) => event.type === "toolcall_end")).toBe(false);
+  });
+
+  it("rejects a tool finish without tool calls", async () => {
+    globalThis.fetch = mockFetch(sseEnvelope(finishChunk("tool_calls")) + DONE_SSE);
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    expect(events.at(-1)?.type).toBe("error");
+  });
+
   it("preserves finish_reason=length instead of overwriting to stop", async () => {
     const sse =
       sseEnvelope(chunk({ content: "partial", role: "assistant" })) + sseEnvelope(finishChunk("length")) + DONE_SSE;
