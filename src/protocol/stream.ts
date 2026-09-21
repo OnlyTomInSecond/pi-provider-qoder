@@ -16,11 +16,12 @@ import {
 import { resolveQoderIdentity } from "../auth/oauth.js";
 import { getCachedModelConfig, MAX_OUTPUT_TOKENS } from "../catalog.js";
 import { buildAuthHeaders, getMachineId } from "../cosy.js";
-import { withAbort } from "../http.js";
+import { readResponseText, withAbort } from "../http.js";
 import { getQoderChatURL, getQoderRegionConfig } from "../region.js";
 import { yieldToEventLoop } from "../yield.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
 import { qoderEncodeBodyAsync } from "./encoding.js";
+import { mergeQoderHeaders } from "./request.js";
 import { getQoderRunIdentity } from "./run-state.js";
 import { stripThinkingTags, ThinkingTagParser } from "./thinking.js";
 import { ToolCallAccumulator } from "./tool-calls.js";
@@ -104,7 +105,9 @@ export function streamQoder(
   let pendingDelta: QoderDeltaEvent | null = null;
   let lastDeltaFlushAt = Date.now();
   let deltaTimer: ReturnType<typeof setTimeout> | undefined;
-  const configuredDeltaInterval = Number(process.env.QODER_STREAM_DELTA_INTERVAL_MS);
+  const configuredDeltaInterval = Number(
+    options?.env?.QODER_STREAM_DELTA_INTERVAL_MS ?? process.env.QODER_STREAM_DELTA_INTERVAL_MS,
+  );
   const deltaIntervalMs =
     Number.isFinite(configuredDeltaInterval) && configuredDeltaInterval >= 0
       ? configuredDeltaInterval
@@ -153,6 +156,7 @@ export function streamQoder(
   };
 
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let response: Response | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   const requestController = new AbortController();
   const requestTimer =
@@ -195,6 +199,8 @@ export function streamQoder(
       // it with "Login expired" (105).
       const ident = await resolveQoderIdentity(accessToken, model.provider, providerMode, {
         signal: requestController.signal,
+        fetch: options?.fetch,
+        timeoutMs: options?.timeoutMs,
       });
       throwIfAborted();
       const userID = ident.userID || "qoder-user";
@@ -219,8 +225,8 @@ export function streamQoder(
       // tool declarations are folded into the transcript's leading system
       // message instead of being top-level fields. Read them back with the
       // transcript helpers, and strip that system message from the list before
-      // mapping it to Qoder's OpenAI-shaped messages (Qoder carries the prompt
-      // in a separate top-level field, not as a `system` role message).
+      // mapping history to Qoder's OpenAI-shaped messages. The resolved prompt
+      // is then sent as one leading system message.
       const transcriptMessages = withoutInitialSystemMessage(context.messages);
       const normalizedMessages = transformMessagesForQoder(transcriptMessages);
       // Resolve the current prompt and tool set in a single transcript pass:
@@ -258,8 +264,10 @@ export function streamQoder(
       // compaction at 40K). This avoids truncating reasoning chains / long
       // generations that the 32K default would cut off.
       let maxTokens = MAX_OUTPUT_TOKENS;
-      if (options?.maxTokens && options.maxTokens < maxTokens) {
-        maxTokens = options.maxTokens;
+      for (const limit of [model.maxTokens, options?.maxTokens]) {
+        if (limit === undefined) continue;
+        if (!Number.isInteger(limit) || limit <= 0) throw new Error("Qoder maxTokens must be a positive integer");
+        maxTokens = Math.min(maxTokens, limit);
       }
 
       const currentTools = currentSystem?.toolsAdded ?? [];
@@ -277,6 +285,7 @@ export function streamQoder(
       const clamped = requestedLevel ? clampThinkingLevel(model, requestedLevel) : undefined;
       const reasoningLevel = clamped === "off" ? undefined : clamped;
       const parameters: Record<string, unknown> = { max_tokens: maxTokens };
+      if (options?.temperature !== undefined) parameters.temperature = options.temperature;
       if (reasoningLevel) {
         parameters.enable_thinking = true;
         // Effort-based models advertise concrete effort names in the map
@@ -359,7 +368,16 @@ export function streamQoder(
         business,
       };
 
-      const bodyBytes = Buffer.from(JSON.stringify(reqBody));
+      // Hooks see the logical JSON payload, not Qoder's encoded wire bytes.
+      // Sign only after replacement/mutation so COSY hashes describe the actual body.
+      const replacement = options?.onPayload
+        ? await withAbort(Promise.resolve(options.onPayload(reqBody, model)), requestController.signal)
+        : undefined;
+      const payload = replacement === undefined ? reqBody : replacement;
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        throw new Error("Qoder onPayload must return a JSON object or undefined");
+      }
+      const bodyBytes = Buffer.from(JSON.stringify(payload));
       throwIfAborted();
       await yieldToEventLoop();
       // qoderEncodeBodyAsync writes the transformed body straight into a
@@ -367,7 +385,7 @@ export function streamQoder(
       const encodedBytes = await qoderEncodeBodyAsync(bodyBytes, requestController.signal);
       throwIfAborted();
 
-      const chatURL = getQoderChatURL(providerMode);
+      const chatURL = getQoderChatURL(providerMode, model.baseUrl);
 
       const headers = buildAuthHeaders(encodedBytes, chatURL, {
         userID,
@@ -377,10 +395,13 @@ export function streamQoder(
         machineID,
       });
 
-      const modelSource = modelConfig.source || "system";
+      const outgoingConfig = (payload as { model_config?: { key?: string; source?: string } }).model_config;
+      const modelSource = outgoingConfig?.source || modelConfig.source || "system";
       // Resolve the (optional) idle-timeout override once per request instead of
       // re-reading process.env on every streamed chunk.
-      const configuredIdleTimeout = Number(process.env.QODER_STREAM_IDLE_TIMEOUT_MS);
+      const configuredIdleTimeout = Number(
+        options?.env?.QODER_STREAM_IDLE_TIMEOUT_MS ?? process.env.QODER_STREAM_IDLE_TIMEOUT_MS,
+      );
       const idleTimeoutMs =
         Number.isFinite(configuredIdleTimeout) && configuredIdleTimeout > 0
           ? configuredIdleTimeout
@@ -393,26 +414,51 @@ export function streamQoder(
       };
       resetIdleTimer();
 
-      const response = await fetch(chatURL, {
+      const fetchPromise = (options?.fetch ?? fetch)(chatURL, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-          "Cache-Control": "no-cache",
-          "Accept-Encoding": "identity",
-          "X-Model-Key": qoderModel,
-          "X-Model-Source": modelSource,
-          ...headers,
-        },
-        // Buffer<ArrayBufferLike> is not part of the DOM BodyInit union, but it
-        // is a valid Uint8Array at runtime; cast across the nominal gap.
+        headers: mergeQoderHeaders(
+          {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Accept-Encoding": "identity",
+            "X-Model-Key": outgoingConfig?.key || qoderModel,
+            "X-Model-Source": modelSource,
+            ...headers,
+          },
+          model.headers,
+          options?.headers,
+        ),
+        // Buffer is a valid Uint8Array at runtime but not in DOM's BodyInit union.
         body: encodedBytes as unknown as BodyInit,
         signal: requestController.signal,
+      }).then((received) => {
+        if (requestController.signal.aborted) {
+          void received.body?.cancel().catch(() => {});
+          throwIfAborted();
+        }
+        return received;
       });
+      response = await withAbort(fetchPromise, requestController.signal);
       resetIdleTimer();
+      if (options?.onResponse) {
+        await withAbort(
+          Promise.resolve(
+            options.onResponse(
+              {
+                status: response.status,
+                headers: Object.fromEntries(response.headers.entries()),
+              },
+              model,
+            ),
+          ),
+          requestController.signal,
+        );
+      }
+      throwIfAborted();
 
       if (!response.ok) {
-        const errText = await response.text();
+        const errText = await readResponseText(response, requestController.signal);
         throw new Error(`Qoder API request failed: ${response.status} ${response.statusText}. Response: ${errText}`);
       }
 
@@ -595,7 +641,7 @@ export function streamQoder(
               const cacheWriteTokens = u.prompt_tokens_details?.cache_write_tokens ?? 0;
               output.usage.input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
               output.usage.output = u.completion_tokens ?? 0;
-              output.usage.totalTokens = u.total_tokens ?? 0;
+              output.usage.totalTokens = u.total_tokens ?? promptTokens + output.usage.output;
               output.usage.cacheRead = cacheReadTokens;
               output.usage.cacheWrite = cacheWriteTokens;
               if (typeof u.completion_tokens_details?.reasoning_tokens === "number") {
@@ -705,7 +751,8 @@ export function streamQoder(
       if (requestTimer) clearTimeout(requestTimer);
       if (idleTimer) clearTimeout(idleTimer);
       removeExternalAbortListener?.();
-      if (reader) await reader.cancel().catch(() => {});
+      if (reader) void reader.cancel().catch(() => {});
+      else if (response) void response.body?.cancel().catch(() => {});
     }
   })();
 

@@ -37,6 +37,26 @@ export async function withRequestTimeout<T>(
   }
 }
 
+/** Read and release even a custom fetch body that ignores AbortSignal. */
+export async function readResponseText(response: Response, signal: AbortSignal): Promise<string> {
+  if (!response.body) return withAbort(response.text(), signal);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  try {
+    while (true) {
+      const { done, value } = await withAbort(reader.read(), signal);
+      signal.throwIfAborted();
+      if (done) break;
+      parts.push(decoder.decode(value, { stream: true }));
+    }
+    parts.push(decoder.decode());
+    return parts.join("");
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+}
+
 export class QoderHttpError extends Error {
   constructor(public readonly status: number) {
     super(`Qoder HTTP ${status}${status === 401 || status === 403 ? ": credentials rejected; run /login again" : ""}`);
@@ -56,7 +76,11 @@ export function fetchQoderJson<T>(url: string, init: RequestInit = {}, options: 
       const response = await fetchWithRetry(url, init, { ...options, signal });
       try {
         if (!response.ok) throw new QoderHttpError(response.status);
-        const data = (await withAbort(response.json(), signal)) as T;
+        const data = (
+          response.body
+            ? JSON.parse(await readResponseText(response, signal))
+            : await withAbort(response.json(), signal)
+        ) as T;
         signal.throwIfAborted();
         return data;
       } finally {
