@@ -67,10 +67,12 @@ export function qoderEncodeBody(plaintext: string | Buffer): Buffer {
  * byte chunks so a very large request body does not monopolize Node's event
  * loop. Returns the identical bytes as {@link qoderEncodeBody}.
  */
-export async function qoderEncodeBodyAsync(plaintext: string | Buffer): Promise<Buffer> {
+export async function qoderEncodeBodyAsync(plaintext: string | Buffer, signal?: AbortSignal): Promise<Buffer> {
+  signal?.throwIfAborted();
   const std = toStdBase64(plaintext);
   const out = Buffer.allocUnsafe(std.length);
   for (let start = 0; start < out.length; start += QODER_ENCODE_CHUNK) {
+    signal?.throwIfAborted();
     const end = Math.min(start + QODER_ENCODE_CHUNK, out.length);
     encodeChunkInto(out, std, start, end);
     if (end < out.length) await yieldToEventLoop();

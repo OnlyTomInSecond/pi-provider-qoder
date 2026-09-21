@@ -16,6 +16,7 @@ import {
 import { resolveQoderIdentity } from "../auth/oauth.js";
 import { getCachedModelConfig, MAX_OUTPUT_TOKENS } from "../catalog.js";
 import { buildAuthHeaders, getMachineId } from "../cosy.js";
+import { withAbort } from "../http.js";
 import { getQoderChatURL, getQoderRegionConfig } from "../region.js";
 import { yieldToEventLoop } from "../yield.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
@@ -154,6 +155,10 @@ export function streamQoder(
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   const requestController = new AbortController();
+  const requestTimer =
+    options?.timeoutMs && options.timeoutMs > 0
+      ? setTimeout(() => requestController.abort(new Error("Qoder request timeout")), options.timeoutMs)
+      : undefined;
   const externalSignal = options?.signal;
   let removeExternalAbortListener: (() => void) | undefined;
   if (externalSignal) {
@@ -188,7 +193,9 @@ export function streamQoder(
       // credentials in its own agent.db, not in ~/.pi/agent/auth.json, so a
       // cache miss would otherwise send uid "qoder-user" and Qoder CN rejects
       // it with "Login expired" (105).
-      const ident = await resolveQoderIdentity(accessToken, model.provider, providerMode);
+      const ident = await resolveQoderIdentity(accessToken, model.provider, providerMode, {
+        signal: requestController.signal,
+      });
       throwIfAborted();
       const userID = ident.userID || "qoder-user";
       const name = ident.name || region.userNameFallback;
@@ -357,7 +364,7 @@ export function streamQoder(
       await yieldToEventLoop();
       // qoderEncodeBodyAsync writes the transformed body straight into a
       // preallocated Buffer, yielding to the event loop on large requests.
-      const encodedBytes = await qoderEncodeBodyAsync(bodyBytes);
+      const encodedBytes = await qoderEncodeBodyAsync(bodyBytes, requestController.signal);
       throwIfAborted();
 
       const chatURL = getQoderChatURL(providerMode);
@@ -499,7 +506,7 @@ export function streamQoder(
       let linesSinceYield = 0;
 
       while (!sawDone) {
-        const { done, value } = await reader.read();
+        const { done, value } = await withAbort(reader.read(), requestController.signal);
         throwIfAborted();
         if (!done) resetIdleTimer();
 
@@ -529,6 +536,7 @@ export function streamQoder(
             linesSinceYield = 0;
             flushPendingDelta();
             await yieldToEventLoop();
+            throwIfAborted();
           }
 
           if (!line.startsWith("data:")) continue;
@@ -694,6 +702,7 @@ export function streamQoder(
       } catch {}
     } finally {
       if (deltaTimer) clearTimeout(deltaTimer);
+      if (requestTimer) clearTimeout(requestTimer);
       if (idleTimer) clearTimeout(idleTimer);
       removeExternalAbortListener?.();
       if (reader) await reader.cancel().catch(() => {});
