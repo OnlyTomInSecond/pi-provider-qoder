@@ -43,6 +43,7 @@ describe("request deadlines and cancellation", () => {
     const assertion = expect(task).rejects.toThrow("timeout");
     await vi.advanceTimersByTimeAsync(50);
     await assertion;
+    expect(cancel).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
 
