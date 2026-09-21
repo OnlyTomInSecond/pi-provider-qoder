@@ -1,8 +1,8 @@
 import type { OAuthCredentials } from "@earendil-works/pi-ai";
 import { getMachineId, QODER_CLIENT_TYPE, QODER_OPENAPI_COSY_VERSION } from "../cosy.js";
 import { debugLog } from "../debug.js";
+import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
 import { getQoderExchangeURL, getQoderRegionConfig, getQoderUserInfoURL, type QoderMode } from "../region.js";
-import { fetchWithRetry } from "../retry.js";
 import { resolveTokenExpiry } from "./expiry.js";
 
 const UA = "pi-provider-qoder";
@@ -53,30 +53,31 @@ export function decodePatRefresh(refresh: string): {
  *   POST /api/v1/jobToken/exchange { personal_token } -> { token, refresh_token, expires_at }
  * The exchange endpoint does not require a COSY signature.
  */
-export async function exchangeJobToken(pat: string, mode: QoderMode): Promise<PatExchangeResult> {
-  const res = await fetch(getQoderExchangeURL(mode), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      "User-Agent": UA,
-      "Cosy-Version": QODER_OPENAPI_COSY_VERSION,
-      "Cosy-ClientType": QODER_CLIENT_TYPE,
-    },
-    body: JSON.stringify({ personal_token: pat }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Qoder PAT exchange failed: ${res.status} ${res.statusText}. ${text.slice(0, 200)}`);
-  }
-
-  const data = (await res.json()) as {
+export async function exchangeJobToken(
+  pat: string,
+  mode: QoderMode,
+  options: QoderRequestOptions = {},
+): Promise<PatExchangeResult> {
+  const data = await fetchQoderJson<{
     token?: string;
     refresh_token?: string;
     expires_at?: string;
     expires_in?: number;
-  };
+  }>(
+    getQoderExchangeURL(mode),
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": UA,
+        "Cosy-Version": QODER_OPENAPI_COSY_VERSION,
+        "Cosy-ClientType": QODER_CLIENT_TYPE,
+      },
+      body: JSON.stringify({ personal_token: pat }),
+    },
+    options,
+  );
 
   if (!data.token) {
     throw new Error("Qoder PAT exchange returned no job token");
@@ -96,12 +97,13 @@ export async function exchangeJobToken(pat: string, mode: QoderMode): Promise<Pa
 export async function fetchUserInfo(
   jobToken: string,
   mode: QoderMode,
+  options: QoderRequestOptions = {},
 ): Promise<{ userID: string; email: string; name: string }> {
   let userID = "";
   let email = "";
   let name = "";
   try {
-    const res = await fetchWithRetry(
+    const info = await fetchQoderJson<{ id?: string; email?: string; name?: string; username?: string }>(
       getQoderUserInfoURL(mode),
       {
         headers: {
@@ -112,20 +114,13 @@ export async function fetchUserInfo(
           "Cosy-ClientType": QODER_CLIENT_TYPE,
         },
       },
-      { attempts: 2 },
+      { attempts: 2, ...options },
     );
-    if (res.ok) {
-      const info = (await res.json()) as {
-        id?: string;
-        email?: string;
-        name?: string;
-        username?: string;
-      };
-      userID = info.id || "";
-      email = info.email || "";
-      name = info.name || info.username || "";
-    }
+    userID = info.id || "";
+    email = info.email || "";
+    name = info.name || info.username || "";
   } catch (error) {
+    options.signal?.throwIfAborted();
     debugLog("failed to fetch Qoder userinfo", error);
   }
   return { userID, email, name };
@@ -136,10 +131,14 @@ export async function fetchUserInfo(
  * Exchanges the PAT for a job token, resolves identity, and encodes the PAT
  * into the refresh field so the token can be re-exchanged on expiry.
  */
-export async function credentialsFromPat(pat: string, mode: QoderMode): Promise<OAuthCredentials> {
+export async function credentialsFromPat(
+  pat: string,
+  mode: QoderMode,
+  options: QoderRequestOptions = {},
+): Promise<OAuthCredentials> {
   const region = getQoderRegionConfig(mode);
-  const { jobToken, jobRefreshToken, expiresAt } = await exchangeJobToken(pat, mode);
-  const { userID, email, name } = await fetchUserInfo(jobToken, mode);
+  const { jobToken, jobRefreshToken, expiresAt } = await exchangeJobToken(pat, mode, options);
+  const { userID, email, name } = await fetchUserInfo(jobToken, mode, options);
   const machineID = getMachineId();
 
   return {

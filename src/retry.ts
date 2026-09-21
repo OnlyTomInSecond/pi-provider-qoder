@@ -29,6 +29,7 @@ export interface FetchRetryOptions {
   maxDelayMs?: number;
   /** Abort signal forwarded to fetch. */
   signal?: AbortSignal;
+  fetch?: typeof fetch;
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -56,7 +57,7 @@ export async function fetchWithRetry(
   init: RequestInit = {},
   options: FetchRetryOptions = {},
 ): Promise<Response> {
-  const attempts = Math.max(1, options.attempts ?? 3);
+  const attempts = (init.method ?? "GET").toUpperCase() === "GET" ? Math.max(1, options.attempts ?? 3) : 1;
   const baseDelayMs = options.baseDelayMs ?? 250;
   const maxDelayMs = options.maxDelayMs ?? 2000;
   const signal = options.signal ?? init.signal ?? undefined;
@@ -64,7 +65,11 @@ export async function fetchWithRetry(
   for (let attempt = 0; ; attempt++) {
     if (signal?.aborted) throw signal.reason ?? new Error("Aborted");
     try {
-      const response = await fetch(input, { ...init, signal });
+      const response = await (options.fetch ?? fetch)(input, { ...init, signal });
+      if (signal?.aborted) {
+        void response.body?.cancel().catch(() => {});
+        throw signal.reason;
+      }
       const retryable = isRetryableStatus(response.status);
       if (!retryable || attempt >= attempts - 1) return response;
       // Release the failed response body before the next attempt.
