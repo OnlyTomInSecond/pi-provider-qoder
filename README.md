@@ -56,7 +56,9 @@ Qoder PATs (`pt-...`) cannot authenticate API calls directly. Every flow ultimat
 2. **Browser OAuth (global only)** — leave the PAT prompt empty and pi opens a Qoder sign-in URL; the plugin polls until you approve. This flow is a PKCE device grant.
 3. **Environment variable** — set one of the PAT env vars above and the provider logs in automatically at startup. An explicit env PAT is authoritative and is re-exchanged on every startup (so an old cached token never silently shadows a new one).
 
-A job token is short-lived; when it nears expiry the provider transparently refreshes it — by re-exchanging the stored PAT, or by using the job refresh token. Global browser and CN logins both persist credentials through pi.
+A job token is short-lived; when it nears expiry the provider transparently refreshes it — by re-exchanging the stored PAT, or by using the job refresh token. Global browser and CN logins both persist credentials through pi. Refresh failures are reported rather than extending an invalid token's local expiry; HTTP 401/403 asks you to log in again.
+
+Authentication, catalog and quota requests have a 15-second deadline covering headers and body. Browser login has a three-minute overall deadline. Login/refresh and chat identity resolution honor cancellation; chat also honors the host's optional `timeoutMs` in addition to the stream idle timeout.
 
 ### Credential storage
 

@@ -1,21 +1,11 @@
 import crypto from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { getMachineId } from "../cosy.js";
-import { debugLog } from "../debug.js";
-import {
-  getQoderDeviceLoginURL,
-  getQoderDevicePollURL,
-  getQoderRegionConfig,
-  getQoderUserInfoURL,
-  type QoderMode,
-} from "../region.js";
+import { QoderHttpError, withAbort, withRequestTimeout } from "../http.js";
+import { getQoderDeviceLoginURL, getQoderDevicePollURL, getQoderRegionConfig, type QoderMode } from "../region.js";
 import { resolveTokenExpiry } from "./expiry.js";
-import { credentialsFromPat } from "./pat.js";
-
-/** pi's LoginDialog drives the interactive flow through these typed callbacks. */
-const getPrompt = (callbacks: OAuthLoginCallbacks) => callbacks.onPrompt;
-const getProgress = (callbacks: OAuthLoginCallbacks): ((message: string) => void) | undefined => callbacks.onProgress;
-const getSignal = (callbacks: OAuthLoginCallbacks): AbortSignal | undefined => callbacks.signal;
+import { credentialsFromPat, fetchUserInfo } from "./pat.js";
 
 export function generatePKCE() {
   const codeVerifier = crypto.randomBytes(32).toString("base64url");
@@ -24,154 +14,81 @@ export function generatePKCE() {
 }
 
 export async function interactiveLogin(callbacks: OAuthLoginCallbacks, mode: QoderMode): Promise<OAuthCredentials> {
+  callbacks.signal?.throwIfAborted();
   const region = getQoderRegionConfig(mode);
-  // pi drives this via its built-in LoginDialog, which wires onPrompt/onAuth/
-  // onProgress to a focused input. We must use those callbacks directly rather
-  // than opening our own ctx.ui.custom surface (which would steal focus and
-  // leave onPrompt unable to receive keystrokes).
-  const prompt = getPrompt(callbacks);
-  const pat = await prompt({
+  // Use the host login dialog callbacks so PAT entry keeps keyboard focus.
+  const pat = await callbacks.onPrompt({
     message: !region.supportsBrowserLogin
       ? "Paste a Qoder CN Personal Access Token, or leave empty to cancel"
       : "Paste a Qoder Personal Access Token (pt-...), or leave empty for browser login",
     placeholder: "pt-...",
     allowEmpty: true,
   });
-  if (getSignal(callbacks)?.aborted) throw new Error("Login cancelled");
+  callbacks.signal?.throwIfAborted();
   if (pat?.trim()) {
-    getProgress(callbacks)?.("Exchanging access token...");
-    const creds = await credentialsFromPat(pat.trim(), mode);
-    getProgress(callbacks)?.("Login successful!");
+    callbacks.onProgress?.("Exchanging access token...");
+    const creds = await credentialsFromPat(pat.trim(), mode, { signal: callbacks.signal });
+    callbacks.signal?.throwIfAborted();
+    callbacks.onProgress?.("Login successful!");
     return creds;
   }
-
   if (!region.supportsBrowserLogin) {
     throw new Error(
       `Qoder CN browser login is not supported here. Paste a Qoder CN PAT from ${region.patManageUrl} or set QODERCN_PERSONAL_ACCESS_TOKEN.`,
     );
   }
-
-  if (getSignal(callbacks)?.aborted) throw new Error("Login cancelled");
-  return runDeviceFlow(callbacks);
+  // Wall-clock deadline includes polling, network stalls and profile resolution.
+  return withRequestTimeout((signal) => runDeviceFlow(callbacks, signal), callbacks.signal, 180_000);
 }
 
-function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.reject(signal.reason || new Error("Login cancelled"));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason || new Error("Login cancelled"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
+interface DeviceToken {
+  token: string;
+  user_id: string;
+  refresh_token: string;
+  expires_at?: string;
+  expires_in?: number;
 }
 
-async function runDeviceFlow(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+async function runDeviceFlow(callbacks: OAuthLoginCallbacks, signal: AbortSignal): Promise<OAuthCredentials> {
   const { codeVerifier, codeChallenge } = generatePKCE();
   const nonce = crypto.randomUUID();
   const machineID = getMachineId();
-
-  const verificationURI = getQoderDeviceLoginURL(codeChallenge, machineID, nonce);
-
-  getProgress(callbacks)?.("Please complete login in your browser...");
-
+  callbacks.onProgress?.("Please complete login in your browser...");
   callbacks.onAuth({
-    url: verificationURI,
+    url: getQoderDeviceLoginURL(codeChallenge, machineID, nonce),
     instructions: "Click to sign in with your Qoder account in the browser.",
   });
 
   const pollURL = getQoderDevicePollURL(nonce, codeVerifier);
-  const pollInterval = 2000;
-  const maxAttempts = 90; // 3 minutes
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (getSignal(callbacks)?.aborted) throw new Error("Login cancelled");
-    await abortableDelay(pollInterval, getSignal(callbacks));
-
-    try {
+  while (true) {
+    await delay(2000, undefined, { signal });
+    const token = await withRequestTimeout(async (requestSignal) => {
       const response = await fetch(pollURL, {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          "User-Agent": "pi-provider-qoder",
-        },
-        signal: getSignal(callbacks),
+        headers: { Accept: "application/json", "User-Agent": "pi-provider-qoder" },
+        signal: requestSignal,
       });
-
-      if (response.status === 202 || response.status === 404) {
-        // Pending
-        continue;
-      }
-
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Device token poll failed: ${response.status} ${response.statusText}. Response: ${errText}`);
-      }
-
-      const tokenData = (await response.json()) as {
-        token: string;
-        user_id: string;
-        refresh_token: string;
-        expires_at?: string;
-        expires_in?: number;
-      };
-
-      if (!tokenData.token) {
-        throw new Error("Device token poll returned empty access token");
-      }
-
-      // Qoder reports `expires_in` in milliseconds (see expiry.ts).
-      const expireMs = resolveTokenExpiry(tokenData);
-
-      // Fetch user info (best effort)
-      getProgress(callbacks)?.("Fetching user profile...");
-      let email = "";
-      let name = "";
       try {
-        const userinfoRes = await fetch(getQoderUserInfoURL("global"), {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${tokenData.token}`,
-            Accept: "application/json",
-            "User-Agent": "pi-provider-qoder",
-          },
-        });
-        if (userinfoRes.ok) {
-          const userinfo = (await userinfoRes.json()) as {
-            email?: string;
-            name?: string;
-            username?: string;
-          };
-          email = userinfo.email || "";
-          name = userinfo.name || userinfo.username || "";
-        }
-      } catch (error) {
-        debugLog("failed to fetch userinfo during device login", error);
+        if (response.status === 202 || response.status === 404) return undefined;
+        if (!response.ok) throw new QoderHttpError(response.status);
+        return await withAbort(response.json() as Promise<DeviceToken>, requestSignal);
+      } finally {
+        void response.body?.cancel().catch(() => {});
       }
-
-      getProgress(callbacks)?.("Login successful!");
-
-      return {
-        refresh: `${tokenData.refresh_token}|${tokenData.user_id}|${machineID}`,
-        access: tokenData.token,
-        expires: expireMs - 5 * 60 * 1000, // 5 min buffer
-        userID: tokenData.user_id,
-        email,
-        name,
-        machineID,
-      } as OAuthCredentials;
-    } catch (e: unknown) {
-      const err = e as { name?: string };
-      if (err.name === "AbortError" || getSignal(callbacks)?.aborted) {
-        throw new Error("Login cancelled");
-      }
-      throw e;
-    }
+    }, signal);
+    if (!token) continue;
+    if (!token.token) throw new Error("Device token poll returned empty access token");
+    callbacks.onProgress?.("Fetching user profile...");
+    const info = await fetchUserInfo(token.token, "global", { signal });
+    signal.throwIfAborted();
+    callbacks.onProgress?.("Login successful!");
+    return {
+      refresh: `${token.refresh_token}|${token.user_id}|${machineID}`,
+      access: token.token,
+      expires: resolveTokenExpiry(token) - 5 * 60 * 1000,
+      userID: token.user_id,
+      email: info.email,
+      name: info.name,
+      machineID,
+    } as OAuthCredentials;
   }
-
-  throw new Error("Authorization timed out");
 }

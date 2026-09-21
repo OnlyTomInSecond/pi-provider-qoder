@@ -1,4 +1,5 @@
 import type { OAuthCredentials } from "@earendil-works/pi-ai";
+import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
 import { getQoderRegionConfig, getQoderUsageURL, type QoderMode } from "../region.js";
 
 interface QoderQuota {
@@ -36,22 +37,21 @@ export interface QoderProviderUsage {
 export async function fetchQoderUsageForMode(
   credentials: OAuthCredentials,
   mode: QoderMode,
+  options: QoderRequestOptions = {},
 ): Promise<QoderProviderUsage> {
   const region = getQoderRegionConfig(mode);
-  const response = await fetch(getQoderUsageURL(mode), {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${credentials.access}`,
-      Accept: "application/json",
-      "User-Agent": "pi-provider-qoder",
+  const raw = await fetchQoderJson<QoderUsageInfo>(
+    getQoderUsageURL(mode),
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${credentials.access}`,
+        Accept: "application/json",
+        "User-Agent": "pi-provider-qoder",
+      },
     },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch Qoder usage: ${response.status} ${response.statusText}`);
-  }
-
-  const raw = (await response.json()) as QoderUsageInfo;
+    options,
+  );
   const usageBuckets = [];
 
   if (raw.userQuota) {

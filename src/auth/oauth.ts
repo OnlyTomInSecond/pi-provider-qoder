@@ -2,6 +2,7 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-a
 import { isCacheStale, updateQoderModelsCache } from "../catalog.js";
 import { getMachineId } from "../cosy.js";
 import { debugLog } from "../debug.js";
+import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
 import { getQoderRefreshURL, getQoderRegionConfig, type QoderMode } from "../region.js";
 import { DEFAULT_TOKEN_TTL_MS, resolveTokenExpiry } from "./expiry.js";
 import { interactiveLogin } from "./login.js";
@@ -141,7 +142,9 @@ export async function resolveQoderIdentity(
   accessToken: string,
   providerID: string,
   mode: QoderMode,
+  options: QoderRequestOptions = {},
 ): Promise<QoderIdentity> {
+  options.signal?.throwIfAborted();
   const region = getQoderRegionConfig(mode);
   const cacheKey = `${providerID}:${accessToken}`;
   const mem = identityCache.get(cacheKey);
@@ -156,7 +159,7 @@ export async function resolveQoderIdentity(
     return cached;
   }
 
-  const info = await fetchUserInfo(accessToken, mode);
+  const info = await fetchUserInfo(accessToken, mode, options);
   const machineID = getMachineId();
   const creds: QoderIdentity = {
     userID: info.userID || "qoder-user",
@@ -177,17 +180,17 @@ export async function loginQoderForMode(callbacks: OAuthLoginCallbacks, mode: Qo
   const pat = getQoderPatForMode(mode);
   if (pat) {
     try {
-      const creds = await credentialsFromPat(pat, mode);
+      const creds = await credentialsFromPat(pat, mode, { signal: callbacks.signal });
       const qCreds = creds as QoderCredentials;
-      // Persist the resolved identity locally so chat requests can resolve the real uid.
-      // Cache models in background
-      updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode).catch((error) =>
-        debugLog("model catalog refresh after PAT exchange failed", error),
+      // Cache models in background without outliving a cancelled login.
+      updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode, callbacks.signal).catch(
+        (error) => debugLog("model catalog refresh after PAT exchange failed", error),
       );
       // The host persists credentials (auth.json in pi, agent.db in OMP).
       if (qCreds.userID) cacheIdentity(`${providerID}:${qCreds.access}`, qCreds);
       return creds;
     } catch (error) {
+      callbacks.signal?.throwIfAborted();
       debugLog("environment PAT exchange failed; falling back to interactive login", error);
     }
   }
@@ -198,8 +201,8 @@ export async function loginQoderForMode(callbacks: OAuthLoginCallbacks, mode: Qo
   // Cache models in background.
   try {
     const qCreds = creds as QoderCredentials;
-    updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode).catch((error) =>
-      debugLog("model catalog refresh after login failed", error),
+    updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode, callbacks.signal).catch(
+      (error) => debugLog("model catalog refresh after login failed", error),
     );
   } catch (error) {
     debugLog("failed to start model catalog refresh after login", error);
@@ -213,91 +216,59 @@ export async function loginQoderForMode(callbacks: OAuthLoginCallbacks, mode: Qo
 export async function refreshQoderTokenForMode(
   credentials: OAuthCredentials,
   mode: QoderMode,
+  signal?: AbortSignal,
 ): Promise<OAuthCredentials> {
-  // PAT-based credentials: re-exchange the stored PAT for a fresh job token.
+  signal?.throwIfAborted();
+  let refreshed: QoderCredentials;
+  // Refresh failures must propagate. Extending local expiry cannot make an
+  // expired/revoked upstream token valid and prevents the host from recovering.
   if (isPatRefresh(credentials.refresh)) {
     const { pat } = decodePatRefresh(credentials.refresh);
-    if (pat) {
-      try {
-        const refreshed = await credentialsFromPat(pat, mode);
-        const qCreds = refreshed as QoderCredentials;
-        updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode).catch((error) =>
-          debugLog("model catalog refresh after PAT re-exchange failed", error),
-        );
-        return refreshed;
-      } catch (error) {
-        debugLog("PAT re-exchange failed; extending validity", error);
-      }
-    }
-    return {
+    if (!pat) throw new Error(`Missing Qoder PAT; run /login ${getQoderRegionConfig(mode).providerID}`);
+    refreshed = (await credentialsFromPat(pat, mode, { signal })) as QoderCredentials;
+  } else {
+    const [refreshToken, storedUserID, storedMachineID] = credentials.refresh.split("|");
+    if (!refreshToken)
+      throw new Error(`Missing Qoder refresh token; run /login ${getQoderRegionConfig(mode).providerID}`);
+    const previous = credentials as Partial<QoderCredentials>;
+    const userID = storedUserID || previous.userID || "";
+    const machineID = storedMachineID || previous.machineID || getMachineId();
+    const data = await fetchQoderJson<{
+      token?: string;
+      refresh_token?: string;
+      expires_at?: string;
+      expires_in?: number;
+    }>(
+      getQoderRefreshURL(mode),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${credentials.access}`,
+          Accept: "application/json",
+          "User-Agent": "pi-provider-qoder",
+        },
+        body: JSON.stringify({ refreshToken }),
+      },
+      { signal },
+    );
+    if (!data.token) throw new Error("Qoder refresh returned no access token");
+    refreshed = {
       ...credentials,
-      expires: Date.now() + 60 * 60 * 1000, // extend 1 hour to retry later
+      refresh: `${data.refresh_token || refreshToken}|${userID}|${machineID}`,
+      access: data.token,
+      expires: resolveTokenExpiry(data, DEFAULT_TOKEN_TTL_MS) - 5 * 60 * 1000,
+      userID,
+      email: previous.email || "",
+      name: previous.name || "",
+      machineID,
     };
   }
-
-  const parts = credentials.refresh.split("|");
-  const refreshToken = parts[0] || "";
-  const userID = parts[1] || "";
-  const machineID = parts[2] || getMachineId();
-  const prev = credentials as Partial<QoderCredentials>;
-  const prevName = prev.name || "";
-  const prevEmail = prev.email || "";
-
-  const refreshURL = getQoderRefreshURL(mode);
-  try {
-    const response = await fetch(refreshURL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${credentials.access}`,
-        Accept: "application/json",
-        "User-Agent": "pi-provider-qoder",
-      },
-      body: JSON.stringify({ refreshToken }),
-    });
-
-    if (response.ok) {
-      const data = (await response.json()) as {
-        token: string;
-        refresh_token?: string;
-        expires_at?: string;
-        expires_in?: number;
-      };
-
-      const newAccess = data.token;
-      const newRefresh = data.refresh_token || refreshToken;
-
-      // Qoder reports `expires_in` in milliseconds (see expiry.ts); keep a
-      // 30-day fallback for responses that omit both fields.
-      const expireMs = resolveTokenExpiry(data, DEFAULT_TOKEN_TTL_MS);
-
-      const refreshed = {
-        ...credentials,
-        refresh: `${newRefresh}|${userID}|${machineID}`,
-        access: newAccess,
-        expires: expireMs - 5 * 60 * 1000,
-        userID,
-        email: prevEmail,
-        name: prevName,
-        machineID,
-      };
-
-      // pi persists the refreshed credentials in auth.json itself.
-      // Cache models in background
-      updateQoderModelsCache(newAccess, userID, prevName, prevEmail, mode).catch((error) =>
-        debugLog("model catalog refresh after token refresh failed", error),
-      );
-
-      return refreshed;
-    }
-  } catch (error) {
-    debugLog("token refresh request failed; extending validity", error);
-  }
-
-  // Fallback: Extend validity slightly to buy time, as Qoder tokens are long-lived
-  const refreshedFallback = {
-    ...credentials,
-    expires: Date.now() + 60 * 60 * 1000, // extend for 1 hour
-  };
-  return refreshedFallback;
+  signal?.throwIfAborted();
+  if (refreshed.userID) cacheIdentity(`${getQoderRegionConfig(mode).providerID}:${refreshed.access}`, refreshed);
+  // Host owns persistence. Catalog refresh is best-effort but cancellation-aware.
+  updateQoderModelsCache(refreshed.access, refreshed.userID, refreshed.name, refreshed.email, mode, signal).catch(
+    (error) => debugLog("model catalog refresh after token refresh failed", error),
+  );
+  return refreshed;
 }

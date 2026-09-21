@@ -4,9 +4,9 @@ import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { buildAuthHeaders } from "./cosy.js";
 import { debugLog } from "./debug.js";
 import { getHomeDir } from "./home.js";
+import { fetchQoderJson } from "./http.js";
 import { parseQoderPriceFactor } from "./protocol/usage.js";
 import { getQoderBaseUrl, getQoderModelListURL, getQoderRegionConfig, type QoderMode } from "./region.js";
-import { fetchWithRetry } from "./retry.js";
 
 export const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
@@ -479,7 +479,11 @@ export async function updateQoderModelsCache(
   name: string,
   email: string,
   mode: QoderMode,
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
+  // Independently cancellable callers must not abort another caller's work.
+  if (signal) return fetchAndCacheModelList(authToken, userID, name, email, mode, signal);
   const inflightKey = `${getQoderCachePath(mode)}:${userID}`;
   const inflight = inflightModelUpdates.get(inflightKey);
   if (inflight) return inflight;
@@ -501,6 +505,7 @@ async function fetchAndCacheModelList(
   name: string,
   email: string,
   mode: QoderMode,
+  signal?: AbortSignal,
 ): Promise<void> {
   const modelListURL = getQoderModelListURL(mode);
   try {
@@ -511,19 +516,18 @@ async function fetchAndCacheModelList(
       email,
     });
 
-    const response = await fetchWithRetry(modelListURL, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        ...headers,
+    const resData = await fetchQoderJson<{ chat?: QoderModelEntry[] }>(
+      modelListURL,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          ...headers,
+        },
       },
-    });
-
-    if (!response.ok) {
-      return;
-    }
-
-    const resData = (await response.json()) as { chat?: QoderModelEntry[] };
+      { signal },
+    );
+    signal?.throwIfAborted();
     const chatModels = resData.chat || [];
     if (chatModels.length === 0) return;
 
@@ -581,6 +585,7 @@ async function fetchAndCacheModelList(
 
     writeParsedModelCache(mode, cacheData);
   } catch (error) {
+    signal?.throwIfAborted();
     debugLog("model catalog refresh failed", error);
   }
 }
