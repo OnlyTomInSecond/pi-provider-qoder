@@ -425,6 +425,68 @@ describe("streamQoder", () => {
     expect(textDeltas[0] && "delta" in textDeltas[0] ? textDeltas[0].delta : "").toBe("ab");
   });
 
+  it.each(["content", "reasoning_content"])(
+    "flushes a lone %s delta on time while the body remains open",
+    async (channel) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c;
+        },
+      });
+      globalThis.fetch = vi.fn(async () => new Response(body)) as typeof fetch;
+      const events: AssistantMessageEvent[] = [];
+      const task = (async () => {
+        for await (const event of streamQoder(makeModel(), makeContext(), { apiKey: "fake" })) events.push(event);
+      })();
+      try {
+        controller.enqueue(new TextEncoder().encode(sseEnvelope(chunk({ [channel]: "first" }))));
+        // Drain real setImmediate yields used during request encoding.
+        for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(events.some((event) => event.type.endsWith("_delta"))).toBe(false);
+        await vi.advanceTimersByTimeAsync(50);
+        expect(events.filter((event) => event.type.endsWith("_delta"))).toHaveLength(1);
+        expect(events.some((event) => event.type === "done")).toBe(false);
+        controller.enqueue(new TextEncoder().encode(DONE_SSE));
+        await task;
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["done", "error"])("clears a pending delta timer on %s without emitting late events", async (ending) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      globalThis.fetch = mockFetch(
+        sseEnvelope(chunk({ content: "tail" })) + (ending === "done" ? DONE_SSE : "data: {broken\n\n"),
+      );
+      const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+      expect(events.at(-1)?.type).toBe(ending);
+      expect(events.filter((event) => event.type === "text_delta")).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("disables delta coalescing when the interval is zero", async () => {
+    const previous = process.env.QODER_STREAM_DELTA_INTERVAL_MS;
+    process.env.QODER_STREAM_DELTA_INTERVAL_MS = "0";
+    try {
+      globalThis.fetch = mockFetch(
+        sseEnvelope(chunk({ content: "a" })) + sseEnvelope(chunk({ content: "b" })) + DONE_SSE,
+      );
+      const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+      expect(events.filter((event) => event.type === "text_delta")).toHaveLength(2);
+    } finally {
+      if (previous === undefined) delete process.env.QODER_STREAM_DELTA_INTERVAL_MS;
+      else process.env.QODER_STREAM_DELTA_INTERVAL_MS = previous;
+    }
+  });
+
   it("keeps many ordinary reasoning chunks intact without DSML markup", async () => {
     const reasoning = Array.from({ length: 200 }, (_, index) => `thought-${index} `).join("");
     const sse =

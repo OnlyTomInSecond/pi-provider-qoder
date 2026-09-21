@@ -102,6 +102,7 @@ export function streamQoder(
 
   let pendingDelta: QoderDeltaEvent | null = null;
   let lastDeltaFlushAt = Date.now();
+  let deltaTimer: ReturnType<typeof setTimeout> | undefined;
   const configuredDeltaInterval = Number(process.env.QODER_STREAM_DELTA_INTERVAL_MS);
   const deltaIntervalMs =
     Number.isFinite(configuredDeltaInterval) && configuredDeltaInterval >= 0
@@ -112,9 +113,22 @@ export function streamQoder(
     if (!pendingDelta) return;
     const now = Date.now();
     if (!force && now - lastDeltaFlushAt < deltaIntervalMs) return;
+    if (deltaTimer) clearTimeout(deltaTimer);
+    deltaTimer = undefined;
     stream.push(pendingDelta);
     pendingDelta = null;
     lastDeltaFlushAt = now;
+  };
+  const scheduleDeltaFlush = (): void => {
+    flushPendingDelta();
+    if (!pendingDelta || deltaTimer) return;
+    deltaTimer = setTimeout(
+      () => {
+        deltaTimer = undefined;
+        flushPendingDelta(true);
+      },
+      Math.max(0, deltaIntervalMs - (Date.now() - lastDeltaFlushAt)),
+    );
   };
   const pushEvent = (event: QoderStreamEvent): void => {
     if (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_delta") {
@@ -123,11 +137,13 @@ export function streamQoder(
         // delta: coalescing is the hottest path in a streamed response and the
         // object has no other references consumers rely on.
         pendingDelta.delta += event.delta;
+        scheduleDeltaFlush();
         return;
       }
       // A different block/type must keep its ordering, so flush unconditionally.
       flushPendingDelta(true);
       pendingDelta = event;
+      scheduleDeltaFlush();
       return;
     }
     // Any non-delta event is an ordering boundary (start/end/done/error).
@@ -677,6 +693,7 @@ export function streamQoder(
         stream.end();
       } catch {}
     } finally {
+      if (deltaTimer) clearTimeout(deltaTimer);
       if (idleTimer) clearTimeout(idleTimer);
       removeExternalAbortListener?.();
       if (reader) await reader.cancel().catch(() => {});
