@@ -34,6 +34,7 @@ function isThinkingRequested(reasoning: unknown): boolean {
 }
 
 const SSE_LINES_PER_YIELD = 32;
+const MAX_PROMPT_CACHE_KEY_LENGTH = 64;
 
 /**
  * Minimum wall-clock interval between coalesced delta pushes. Hosts (pi) rebuild
@@ -201,11 +202,17 @@ export function streamQoder(
 
       // Use a stable session id when pi provides one (per agent session) so
       // the Qoder server can maintain prompt cache affinity across consecutive
-      // requests. The id is only used for server-side affinity, so with a
-      // caller-provided sessionId we can build it directly and skip the
-      // per-request SHA-256; hash only the random fallback into a stable prefix.
+      // requests. Qoder forwards session_id as prompt_cache_key upstream,
+      // which has a maximum length of 64 characters. Preserve the readable
+      // form when it fits; hash the complete identity when it does not so the
+      // bounded key remains stable for the same user/model/session.
       const sessionID = options?.sessionId
-        ? `qoder-session-${userID}-${qoderModel}-${options.sessionId}`
+        ? (() => {
+            const readable = `qoder-session-${userID}-${qoderModel}-${options.sessionId}`;
+            return readable.length <= MAX_PROMPT_CACHE_KEY_LENGTH
+              ? readable
+              : `qoder-session-${stableHash("qoder-session", userID, qoderModel, options.sessionId)}`;
+          })()
         : `${stableHash("qoder-session", userID, qoderModel)}-${crypto.randomUUID()}`;
 
       // Qoder's catalog exposes no per-model output cap, so we use the

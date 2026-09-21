@@ -211,6 +211,39 @@ describe("streamQoder", () => {
     expect(body.model_config.key).toBe("lite");
   });
 
+  it("bounds long session ids to the upstream prompt cache key limit", async () => {
+    const sessionId = `session-${"x".repeat(80)}`;
+    const options = { apiKey: "fake", sessionId };
+
+    globalThis.fetch = mockFetch(SUCCESS_SSE);
+    await consume(streamQoder(makeModel("qoder", "Lite"), makeContext(), options));
+    const firstInit = vi.mocked(globalThis.fetch).mock.calls[0][1];
+
+    const custom = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
+    const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const decodeBody = (init: RequestInit | undefined): { session_id: string } => {
+      const encoded = Buffer.from(init?.body as Uint8Array).toString("utf8");
+      const rearranged = [...encoded]
+        .map((character) => (character === "$" ? "=" : standard[custom.indexOf(character)] || character))
+        .join("");
+      const third = Math.floor(rearranged.length / 3);
+      const base64 =
+        rearranged.slice(rearranged.length - third) +
+        rearranged.slice(third, rearranged.length - third) +
+        rearranged.slice(0, third);
+      return JSON.parse(Buffer.from(base64, "base64").toString("utf8")) as { session_id: string };
+    };
+    const firstBody = decodeBody(firstInit);
+
+    expect(firstBody.session_id.length).toBeLessThanOrEqual(64);
+    expect(firstBody.session_id).toMatch(/^qoder-session-[0-9a-f]{16}$/);
+
+    globalThis.fetch = mockFetch(SUCCESS_SSE);
+    await consume(streamQoder(makeModel("qoder", "Lite"), makeContext(), options));
+    const secondInit = vi.mocked(globalThis.fetch).mock.calls[0][1];
+    expect(decodeBody(secondInit).session_id).toBe(firstBody.session_id);
+  });
+
   it("binds chat hosts to provider ids even when only a CN PAT is set", async () => {
     process.env.QODERCN_PERSONAL_ACCESS_TOKEN = "pt-cn-only";
 
