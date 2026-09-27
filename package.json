@@ -1,6 +1,6 @@
 {
-  "name": "pi-provider-qoder",
-  "version": "0.4.5",
+  "name": "@zenodinh/pi-provider-qoder",
+  "version": "0.0.1",
   "description": "Pi extension for Qoder AI — with OAuth authentication, COSY signatures and WAF bypass",
   "type": "module",
   "license": "MIT",
@@ -46,10 +46,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/simonsmh/pi-provider-qoder.git"
+    "url": "git+https://github.com/zenodinh/pi-provider-qoder.git"
   },
   "bugs": {
-    "url": "https://github.com/simonsmh/pi-provider-qoder/issues"
+    "url": "https://github.com/zenodinh/pi-provider-qoder/issues"
   },
-  "homepage": "https://github.com/simonsmh/pi-provider-qoder#readme"
+  "homepage": "https://github.com/zenodinh/pi-provider-qoder#readme"
 }

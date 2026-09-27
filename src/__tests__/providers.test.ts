@@ -45,6 +45,7 @@ describe("provider region binding", () => {
       registerProvider(providerID: string, config: Record<string, unknown>) {
         providers.set(providerID, config);
       },
+      registerCommand: vi.fn(),
       on: vi.fn(),
     };
 
@@ -116,6 +117,7 @@ describe("qoder-api registry", () => {
     });
     const pi = {
       registerProvider,
+      registerCommand: vi.fn(),
       on: vi.fn(),
     };
 
@@ -154,6 +156,7 @@ describe("qoder-api registry", () => {
     });
     const pi = {
       registerProvider,
+      registerCommand: vi.fn(),
       on: vi.fn(),
     };
 
