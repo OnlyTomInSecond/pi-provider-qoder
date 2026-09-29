@@ -31,7 +31,7 @@ Inside pi:
 - **Live model catalog** — fetched from the authenticated Qoder `/model/list` endpoint and cached per region.
 - **Effort-aware thinking** — pi's thinking levels are mapped onto each model's `enable_thinking` / `reasoning_effort` support.
 - **Agentic tool use** — native tool calls, plus DSML markup embedded in the text stream, parsed into clean `toolCall` blocks.
-- **Robust streaming** — handles Qoder's double-`[DONE]` SSE envelope, hidden `<thinking>` markup, idle timeouts, and orphaned/compacted tool history.
+- **Robust streaming** — handles Qoder's double-`[DONE]` SSE envelope, hidden `<thinking>` markup, idle timeouts with one transparent continuation from the partial assistant output, and orphaned/compacted tool history.
 - **Usage reporting** — `/login` panels and session usage show Credits quota (user quota + org resource package).
 - **WAF bypass / COSY signatures** — every request is signed with the same RSA/AES machine-bound headers Qoder expects.
 
@@ -116,6 +116,7 @@ The streamed response is normalized into pi thinking blocks regardless of how th
 - **Tool calls.** Native structured `tool_calls` and DSML tool markup embedded in the text stream are both parsed into pi tool calls. Images returned by tools (e.g. screenshots, `read`) are forwarded to the model as data-URL image parts.
 - **Prompt cache.** A stable session id derived from your user id + model keeps prompt-cache affinity across consecutive requests in a session.
 - **History repair.** Before sending, orphaned tool results, dropped (error/aborted) assistant turns, and placeholderless tool-call messages are repaired so Qoder never rejects a request with "tool must follow a message with tool_calls".
+- **Timeout continuation.** If Qoder's stream/request deadline fires after reasoning or text has arrived, the provider transparently makes one `is_retry` request with the partial assistant turn plus a no-repeat continuation instruction. It reuses the same `session_id`, `request_set_id`, and `business`; user cancellation and incomplete tool calls are never replayed automatically.
 
 ## Host request compatibility
 

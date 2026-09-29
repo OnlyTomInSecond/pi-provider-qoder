@@ -57,6 +57,31 @@ function stableHash(prefix: string, ...inputs: string[]): string {
   return hash.digest("hex").slice(0, 16);
 }
 
+/** Private options used only between the initial stream and its one resume attempt. */
+const QODER_RESUME_ATTEMPT = "__qoderResumeAttempt";
+const QODER_EFFECTIVE_SESSION_ID = "__qoderEffectiveSessionId";
+const QODER_CONTINUATION_PROMPT =
+  "Continue the original task from exactly where the previous response stopped. Do not repeat any reasoning or text already generated; continue and finish the response.";
+
+type InternalStreamOptions = SimpleStreamOptions & Record<string, unknown>;
+
+function isResumeAttempt(options?: SimpleStreamOptions): boolean {
+  return (options as InternalStreamOptions | undefined)?.[QODER_RESUME_ATTEMPT] === 1;
+}
+
+function isResumableTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message === "Qoder stream idle timeout" || error.message === "Qoder request timeout")
+  );
+}
+
+function hasGeneratedContent(message: AssistantMessage): boolean {
+  return message.content.some(
+    (block) =>
+      (block.type === "text" && block.text.length > 0) || (block.type === "thinking" && block.thinking.length > 0),
+  );
+}
 type QoderStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
 type QoderDeltaEvent = Extract<QoderStreamEvent, { type: "text_delta" | "thinking_delta" | "toolcall_delta" }>;
 
@@ -179,10 +204,129 @@ export function streamQoder(
     throw reason instanceof Error ? reason : new Error("Qoder request aborted");
   };
 
+  const resumeAfterTimeout = async (): Promise<boolean> => {
+    if (
+      isResumeAttempt(options) ||
+      options?.signal?.aborted ||
+      !effectiveSessionID ||
+      !hasGeneratedContent(output) ||
+      output.content.some((block) => block.type === "toolCall")
+    ) {
+      return false;
+    }
+
+    const resumeAssistant = {
+      ...output,
+      content: output.content.map((block) => ({ ...block })),
+      stopReason: "stop" as const,
+      errorMessage: undefined,
+    } as AssistantMessage;
+    const continuationContext = {
+      ...context,
+      messages: [
+        ...context.messages,
+        resumeAssistant,
+        { role: "user", content: QODER_CONTINUATION_PROMPT, timestamp: Date.now() },
+      ],
+    } as TranscriptContext;
+    const continuationOptions = {
+      ...options,
+      sessionId: effectiveSessionID,
+      [QODER_RESUME_ATTEMPT]: 1,
+      [QODER_EFFECTIVE_SESSION_ID]: effectiveSessionID,
+    } as SimpleStreamOptions;
+    const continuation = streamQoder(model, continuationContext, continuationOptions);
+    const contentIndices = new Map<number, number>();
+
+    const indexFor = (nestedIndex: number): number => {
+      const index = contentIndices.get(nestedIndex);
+      if (index === undefined) throw new Error("Qoder continuation returned an invalid content index");
+      return index;
+    };
+
+    for await (const event of continuation) {
+      switch (event.type) {
+        case "start":
+          break;
+        case "text_start":
+          contentIndices.set(event.contentIndex, output.content.length);
+          output.content.push({ type: "text", text: "" });
+          pushEvent({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
+          break;
+        case "text_delta": {
+          const contentIndex = indexFor(event.contentIndex);
+          const block = output.content[contentIndex];
+          if (block?.type !== "text") throw new Error("Qoder continuation returned an invalid text block");
+          block.text += event.delta;
+          pushEvent({ type: "text_delta", contentIndex, delta: event.delta, partial: output });
+          break;
+        }
+        case "text_end": {
+          const contentIndex = indexFor(event.contentIndex);
+          const block = output.content[contentIndex];
+          if (block?.type !== "text") throw new Error("Qoder continuation returned an invalid text block");
+          block.text = event.content;
+          pushEvent({ type: "text_end", contentIndex, content: block.text, partial: output });
+          break;
+        }
+        case "thinking_start":
+          contentIndices.set(event.contentIndex, output.content.length);
+          output.content.push({ type: "thinking", thinking: "" });
+          pushEvent({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+          break;
+        case "thinking_delta": {
+          const contentIndex = indexFor(event.contentIndex);
+          const block = output.content[contentIndex];
+          if (block?.type !== "thinking") throw new Error("Qoder continuation returned an invalid thinking block");
+          block.thinking += event.delta;
+          pushEvent({ type: "thinking_delta", contentIndex, delta: event.delta, partial: output });
+          break;
+        }
+        case "thinking_end": {
+          const contentIndex = indexFor(event.contentIndex);
+          const block = output.content[contentIndex];
+          if (block?.type !== "thinking") throw new Error("Qoder continuation returned an invalid thinking block");
+          block.thinking = event.content;
+          pushEvent({ type: "thinking_end", contentIndex, content: block.thinking, partial: output });
+          break;
+        }
+        case "toolcall_start":
+        case "toolcall_delta":
+        case "toolcall_end":
+          throw new Error("Qoder continuation returned a tool call after a timeout");
+        case "done":
+          output.stopReason = event.reason;
+          output.rawStopReason = event.message.rawStopReason;
+          output.responseId = event.message.responseId;
+          output.responseModel = event.message.responseModel;
+          output.errorMessage = undefined;
+          {
+            const previousOutput = output.usage.output;
+            const previousReasoning = output.usage.reasoning ?? 0;
+            Object.assign(output.usage, event.message.usage);
+            output.usage.output += previousOutput;
+            if (output.usage.reasoning !== undefined) output.usage.reasoning += previousReasoning;
+            output.usage.totalTokens += previousOutput;
+          }
+          break;
+        case "error":
+          throw new Error(event.error.errorMessage || "Qoder continuation failed");
+      }
+    }
+
+    const continuationResult = await continuation.result();
+    if (continuationResult.stopReason === "error" || continuationResult.stopReason === "aborted") {
+      throw new Error(continuationResult.errorMessage || "Qoder continuation failed");
+    }
+    return true;
+  };
+  let effectiveSessionID: string | undefined;
+
   (async () => {
     try {
       throwIfAborted();
       const providerMode = model.provider === "qoder-cn" ? "cn" : "global";
+
       const region = getQoderRegionConfig(providerMode);
       const accessToken = options?.apiKey;
       if (!accessToken) {
@@ -249,14 +393,17 @@ export function streamQoder(
       // which has a maximum length of 64 characters. Preserve the readable
       // form when it fits; hash the complete identity when it does not so the
       // bounded key remains stable for the same user/model/session.
-      const sessionID = options?.sessionId
-        ? (() => {
-            const readable = `qoder-session-${userID}-${qoderModel}-${options.sessionId}`;
-            return readable.length <= MAX_PROMPT_CACHE_KEY_LENGTH
-              ? readable
-              : `qoder-session-${stableHash("qoder-session", userID, qoderModel, options.sessionId)}`;
-          })()
-        : `${stableHash("qoder-session", userID, qoderModel)}-${crypto.randomUUID()}`;
+      effectiveSessionID =
+        typeof (options as InternalStreamOptions | undefined)?.[QODER_EFFECTIVE_SESSION_ID] === "string"
+          ? ((options as InternalStreamOptions)[QODER_EFFECTIVE_SESSION_ID] as string)
+          : options?.sessionId
+            ? (() => {
+                const readable = `qoder-session-${userID}-${qoderModel}-${options.sessionId}`;
+                return readable.length <= MAX_PROMPT_CACHE_KEY_LENGTH
+                  ? readable
+                  : `qoder-session-${stableHash("qoder-session", userID, qoderModel, options.sessionId)}`;
+              })()
+            : `${stableHash("qoder-session", userID, qoderModel)}-${crypto.randomUUID()}`;
 
       // Qoder's catalog exposes no per-model output cap, so we use the
       // documented upstream ceiling (MAX_OUTPUT_TOKENS = 131072, see models.ts)
@@ -314,9 +461,10 @@ export function streamQoder(
       const { requestSetId, business } = getQoderRunIdentity({
         mode: providerMode,
         model: qoderModel,
-        sessionId: sessionID,
+        sessionId: effectiveSessionID,
         messages: normalizedMessages,
         lastUserText,
+        resume: isResumeAttempt(options),
         product: "cli",
       });
       const requestID = crypto.randomUUID();
@@ -327,11 +475,11 @@ export function streamQoder(
         request_id: requestID,
         request_set_id: requestSetId,
         chat_record_id: requestID,
-        session_id: sessionID,
+        session_id: effectiveSessionID,
         stream: true,
         chat_task: "FREE_INPUT",
         is_reply: true,
-        is_retry: false,
+        is_retry: isResumeAttempt(options),
         source: 1,
         version: "3",
         session_type: "qodercli",
@@ -740,8 +888,27 @@ export function streamQoder(
       });
       stream.end();
     } catch (e: unknown) {
+      let failure = e;
+      if (isResumableTimeout(e) && !options?.signal?.aborted) {
+        try {
+          if (await resumeAfterTimeout()) {
+            if (output.stopReason === "pending" || output.stopReason === "error" || output.stopReason === "aborted") {
+              throw new Error("Qoder continuation ended without a usable stop reason");
+            }
+            pushEvent({
+              type: "done",
+              reason: output.stopReason,
+              message: output,
+            });
+            stream.end();
+            return;
+          }
+        } catch (resumeError) {
+          failure = resumeError;
+        }
+      }
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-      output.errorMessage = e instanceof Error ? e.message : String(e);
+      output.errorMessage = failure instanceof Error ? failure.message : String(failure);
       pushEvent({ type: "error", reason: output.stopReason, error: output });
       try {
         stream.end();
