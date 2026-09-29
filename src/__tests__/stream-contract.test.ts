@@ -225,6 +225,53 @@ describe("pi request contract", () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
+  it("resumes a partial generation once after a provider timeout", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    let chatCalls = 0;
+    const partial = envelope({ choices: [{ delta: { reasoning_content: "already thought" } }] });
+    const continued = `${text("continued")}data: [DONE]\n\n`;
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      chatCalls++;
+      const payload = decodeBody(init?.body);
+      requests.push(JSON.parse(JSON.stringify(payload)) as Record<string, unknown>);
+      if (chatCalls === 1) {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(partial));
+            },
+          }),
+        );
+      }
+      return new Response(continued);
+    }) as typeof globalThis.fetch;
+
+    const result = await run({
+      fetch,
+      env: { QODER_STREAM_IDLE_TIMEOUT_MS: "10" },
+      reasoning: "high",
+    });
+
+    expect(result.stopReason).toBe("stop");
+    expect(result.content).toEqual([
+      { type: "thinking", thinking: "already thought" },
+      { type: "text", text: "continued" },
+    ]);
+    expect(chatCalls).toBe(2);
+    expect(requests[1]?.is_retry).toBe(true);
+    expect(requests[1]?.session_id).toBe(requests[0]?.session_id);
+    expect(requests[1]?.request_set_id).toBe(requests[0]?.request_set_id);
+    const messages = requests[1]?.messages as Array<Record<string, unknown>>;
+    expect(messages.at(-2)).toMatchObject({
+      role: "assistant",
+      reasoning_content: "already thought",
+    });
+    expect(messages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("Continue the original task"),
+    });
+  });
+
   it("does not retry billable chat POSTs", async () => {
     const fetch = vi.fn(async () => new Response("unavailable", { status: 503 }));
     expect((await run({ fetch, maxRetries: 3 })).stopReason).toBe("error");
