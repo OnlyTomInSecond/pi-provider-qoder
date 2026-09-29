@@ -127,6 +127,8 @@ export interface QoderRunRequest {
   messages: readonly QoderRunMessage[];
   /** Text of the current user prompt (used for the business display name). */
   lastUserText: string;
+  /** Reuse the current run even though the continuation adds a fresh user turn. */
+  resume?: boolean;
   product: string;
 }
 
@@ -143,7 +145,7 @@ export interface QoderRunIdentity {
  */
 export function getQoderRunIdentity(input: QoderRunRequest): QoderRunIdentity {
   const key = `${input.mode}:${input.model}:${input.sessionId}`;
-  const continuation = isToolRoundContinuation(input.messages);
+  const continuation = input.resume || isToolRoundContinuation(input.messages);
 
   let state = continuation ? runStates.get(key) : undefined;
   if (!state) {
