@@ -59,7 +59,6 @@ function stableHash(prefix: string, ...inputs: string[]): string {
 
 /** Private options used only between the initial stream and its one resume attempt. */
 const QODER_RESUME_ATTEMPT = "__qoderResumeAttempt";
-const QODER_EFFECTIVE_SESSION_ID = "__qoderEffectiveSessionId";
 const QODER_CONTINUATION_PROMPT =
   "Continue the original task from exactly where the previous response stopped. Do not repeat any reasoning or text already generated; continue and finish the response.";
 
@@ -74,6 +73,18 @@ function isResumableTimeout(error: unknown): boolean {
     error instanceof Error &&
     (error.message === "Qoder stream idle timeout" || error.message === "Qoder request timeout")
   );
+}
+
+/** Resolve the bounded prompt-cache key, preserving it across an internal resume. */
+function resolveSessionID(userID: string, qoderModel: string, options?: SimpleStreamOptions): string {
+  const supplied = options?.sessionId;
+  if (isResumeAttempt(options) && supplied) return supplied;
+  if (!supplied) return `${stableHash("qoder-session", userID, qoderModel)}-${crypto.randomUUID()}`;
+
+  const readable = `qoder-session-${userID}-${qoderModel}-${supplied}`;
+  return readable.length <= MAX_PROMPT_CACHE_KEY_LENGTH
+    ? readable
+    : `qoder-session-${stableHash("qoder-session", userID, qoderModel, supplied)}`;
 }
 
 function hasGeneratedContent(message: AssistantMessage): boolean {
@@ -233,7 +244,6 @@ export function streamQoder(
       ...options,
       sessionId: effectiveSessionID,
       [QODER_RESUME_ATTEMPT]: 1,
-      [QODER_EFFECTIVE_SESSION_ID]: effectiveSessionID,
     } as SimpleStreamOptions;
     const continuation = streamQoder(model, continuationContext, continuationOptions);
     const contentIndices = new Map<number, number>();
@@ -393,17 +403,7 @@ export function streamQoder(
       // which has a maximum length of 64 characters. Preserve the readable
       // form when it fits; hash the complete identity when it does not so the
       // bounded key remains stable for the same user/model/session.
-      effectiveSessionID =
-        typeof (options as InternalStreamOptions | undefined)?.[QODER_EFFECTIVE_SESSION_ID] === "string"
-          ? ((options as InternalStreamOptions)[QODER_EFFECTIVE_SESSION_ID] as string)
-          : options?.sessionId
-            ? (() => {
-                const readable = `qoder-session-${userID}-${qoderModel}-${options.sessionId}`;
-                return readable.length <= MAX_PROMPT_CACHE_KEY_LENGTH
-                  ? readable
-                  : `qoder-session-${stableHash("qoder-session", userID, qoderModel, options.sessionId)}`;
-              })()
-            : `${stableHash("qoder-session", userID, qoderModel)}-${crypto.randomUUID()}`;
+      effectiveSessionID = resolveSessionID(userID, qoderModel, options);
 
       // Qoder's catalog exposes no per-model output cap, so we use the
       // documented upstream ceiling (MAX_OUTPUT_TOKENS = 131072, see models.ts)
