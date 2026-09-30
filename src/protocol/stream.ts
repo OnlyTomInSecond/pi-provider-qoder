@@ -612,6 +612,10 @@ export function streamQoder(
 
       reader = response.body?.getReader();
       if (!reader) throw new Error("No response body");
+      const notifyProviderStreamEvent = async (event: unknown): Promise<void> => {
+        if (!options?.onProviderStreamEvent) return;
+        await withAbort(Promise.resolve(options.onProviderStreamEvent(event, model)), requestController.signal);
+      };
       const decoder = new TextDecoder();
       let buffer = "";
 
@@ -758,6 +762,7 @@ export function streamQoder(
             if (!innerStr) continue;
 
             const inner = JSON.parse(innerStr);
+            await notifyProviderStreamEvent(inner);
             if (inner.error || (inner.code && inner.message && !inner.choices)) {
               const error = inner.error ?? inner;
               throw new Error(`Qoder upstream error: ${typeof error === "string" ? error : JSON.stringify(error)}`);
