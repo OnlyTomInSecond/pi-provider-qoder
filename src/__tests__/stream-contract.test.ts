@@ -102,6 +102,21 @@ describe("pi request contract", () => {
     expect(result.stopReason).toBe(status === 200 ? "stop" : "error");
   });
 
+  it("awaits onProviderStreamEvent before normalizing each provider event", async () => {
+    const events: unknown[] = [];
+    const result = await run({
+      fetch: vi.fn(async () => new Response(success)),
+      onProviderStreamEvent: async (event, selected) => {
+        events.push(event);
+        expect(selected).toBe(model);
+        await Promise.resolve();
+      },
+    });
+    expect(result.stopReason).toBe("stop");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ choices: [{ delta: { content: "OK" } }] });
+  });
+
   it("merges caller headers case-insensitively, supports deletion, and honors baseUrl", async () => {
     let url: unknown;
     let headers: Headers | undefined;
