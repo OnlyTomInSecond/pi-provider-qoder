@@ -76,6 +76,9 @@ export function fetchQoderJson<T>(url: string, init: RequestInit = {}, options: 
       const response = await fetchWithRetry(url, init, { ...options, signal });
       try {
         if (!response.ok) throw new QoderHttpError(response.status);
+        // Prefer readResponseText (bounded even for transports that ignore
+        // AbortSignal), but fall back to response.json() for injected fetch
+        // implementations that only expose a duck-typed JSON response.
         const data = (
           response.body
             ? JSON.parse(await readResponseText(response, signal))

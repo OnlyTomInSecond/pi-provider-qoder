@@ -3,6 +3,7 @@ import { isCacheStale, updateQoderModelsCache } from "../catalog.js";
 import { getMachineId, QODER_USER_AGENT } from "../cosy.js";
 import { debugLog } from "../debug.js";
 import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
+import { LruMap } from "../lru.js";
 import { getQoderRefreshURL, getQoderRegionConfig, type QoderMode } from "../region.js";
 import { DEFAULT_TOKEN_TTL_MS, resolveTokenExpiry } from "./expiry.js";
 import { interactiveLogin } from "./login.js";
@@ -19,23 +20,18 @@ export interface QoderCredentials extends OAuthCredentials {
 
 export type QoderIdentity = Pick<QoderCredentials, "userID" | "email" | "name" | "machineID">;
 
-const identityCache = new Map<string, QoderIdentity>();
-
 /** Cap the identity memo so long sessions with many token refreshes stay bounded. */
 const MAX_IDENTITY_CACHE = 32;
 
+const identityCache = new LruMap<string, QoderIdentity>(MAX_IDENTITY_CACHE);
+
 /**
- * Memoize an identity, evicting the oldest entry past the cap. Re-inserting an
- * existing key refreshes its recency (LRU), and a token refresh produces a new
- * key each time, so the oldest (stale) entries fall off first.
+ * Memoize an identity, refreshing recency so the oldest (stale) entries fall
+ * off first as token refreshes mint new keys.
  */
 function cacheIdentity(key: string, creds: QoderIdentity): void {
-  identityCache.delete(key);
   const { userID, email, name, machineID } = creds;
   identityCache.set(key, { userID, email, name, machineID });
-  if (identityCache.size <= MAX_IDENTITY_CACHE) return;
-  const oldest = identityCache.keys().next().value;
-  if (oldest !== undefined) identityCache.delete(oldest);
 }
 
 /** Insert an identity into the bounded memo. Exposed for tests only. */
@@ -120,7 +116,9 @@ export function getCachedCredentials(accessToken?: string, providerID = "qoder")
     debugLog("failed to read auth storage", error);
     return null;
   }
-  const creds = (auth[providerID] || (providerID === "qoder" ? auth.qoder : null)) as QoderCredentials | null;
+  // providerID is the auth.json key, so a direct lookup already covers the
+  // legacy `auth.qoder` fallback the default provider used.
+  const creds = auth[providerID] as QoderCredentials | null | undefined;
   if (!(creds?.userID || creds?.access)) return null;
   // A caller asking for a specific token must not receive another account's
   // identity; an empty token means "any entry" (used to discover the token).
