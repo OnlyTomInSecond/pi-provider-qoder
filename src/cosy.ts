@@ -16,6 +16,23 @@ XcW+ML9FoCI6AOvOzwIDAQAB
 export const QODER_GATEWAY_COSY_VERSION = "1.1.38";
 export const QODER_OPENAPI_COSY_VERSION = "1.0.1";
 export const QODER_CLIENT_TYPE = "5";
+export const QODER_USER_AGENT = "pi-provider-qoder";
+
+/**
+ * Headers for Qoder's OpenAPI endpoints (PAT exchange, userinfo). Distinct from
+ * the COSY-signed chat headers: the exchange endpoint needs the Cosy client
+ * identity but authenticates via the request body, while userinfo uses a bearer
+ * token.
+ */
+export function buildOpenApiHeaders(authToken?: string): Record<string, string> {
+  return {
+    Accept: "application/json",
+    "User-Agent": QODER_USER_AGENT,
+    "Cosy-Version": QODER_OPENAPI_COSY_VERSION,
+    "Cosy-ClientType": QODER_CLIENT_TYPE,
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+  };
+}
 const QoderDataPolicy = "disagree";
 const QoderLoginVersion = "v2";
 const QoderMachineOS =

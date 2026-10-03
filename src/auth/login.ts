@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-import { getMachineId } from "../cosy.js";
+import { getMachineId, QODER_USER_AGENT } from "../cosy.js";
 import { QoderHttpError, withAbort, withRequestTimeout } from "../http.js";
 import { getQoderDeviceLoginURL, getQoderDevicePollURL, getQoderRegionConfig, type QoderMode } from "../region.js";
 import { resolveTokenExpiry } from "./expiry.js";
@@ -64,7 +64,7 @@ async function runDeviceFlow(callbacks: OAuthLoginCallbacks, signal: AbortSignal
     await delay(2000, undefined, { signal });
     const token = await withRequestTimeout(async (requestSignal) => {
       const response = await fetch(pollURL, {
-        headers: { Accept: "application/json", "User-Agent": "pi-provider-qoder" },
+        headers: { Accept: "application/json", "User-Agent": QODER_USER_AGENT },
         signal: requestSignal,
       });
       try {

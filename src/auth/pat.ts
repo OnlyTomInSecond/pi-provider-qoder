@@ -1,11 +1,9 @@
 import type { OAuthCredentials } from "@earendil-works/pi-ai";
-import { getMachineId, QODER_CLIENT_TYPE, QODER_OPENAPI_COSY_VERSION } from "../cosy.js";
+import { buildOpenApiHeaders, getMachineId } from "../cosy.js";
 import { debugLog } from "../debug.js";
 import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
 import { getQoderExchangeURL, getQoderRegionConfig, getQoderUserInfoURL, type QoderMode } from "../region.js";
 import { resolveTokenExpiry } from "./expiry.js";
-
-const UA = "pi-provider-qoder";
 
 /**
  * Marker prefix used in the credential `refresh` field to identify PAT-based
@@ -69,10 +67,7 @@ export async function exchangeJobToken(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Accept: "application/json",
-        "User-Agent": UA,
-        "Cosy-Version": QODER_OPENAPI_COSY_VERSION,
-        "Cosy-ClientType": QODER_CLIENT_TYPE,
+        ...buildOpenApiHeaders(),
       },
       body: JSON.stringify({ personal_token: pat }),
     },
@@ -106,13 +101,7 @@ export async function fetchUserInfo(
     const info = await fetchQoderJson<{ id?: string; email?: string; name?: string; username?: string }>(
       getQoderUserInfoURL(mode),
       {
-        headers: {
-          Authorization: `Bearer ${jobToken}`,
-          Accept: "application/json",
-          "User-Agent": UA,
-          "Cosy-Version": QODER_OPENAPI_COSY_VERSION,
-          "Cosy-ClientType": QODER_CLIENT_TYPE,
-        },
+        headers: buildOpenApiHeaders(jobToken),
       },
       { attempts: 2, ...options },
     );

@@ -1,4 +1,5 @@
 import type { OAuthCredentials } from "@earendil-works/pi-ai";
+import { QODER_USER_AGENT } from "../cosy.js";
 import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
 import { getQoderRegionConfig, getQoderUsageURL, type QoderMode } from "../region.js";
 
@@ -47,7 +48,7 @@ export async function fetchQoderUsageForMode(
       headers: {
         Authorization: `Bearer ${credentials.access}`,
         Accept: "application/json",
-        "User-Agent": "pi-provider-qoder",
+        "User-Agent": QODER_USER_AGENT,
       },
     },
     options,
