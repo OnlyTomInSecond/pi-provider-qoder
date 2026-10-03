@@ -45,7 +45,7 @@ function stableHash(prefix: string, ...inputs: string[]): string {
  * of a fresh UUID: a per-request random id defeats both upstream prompt-cache
  * affinity and the run coalescing in run-state.ts.
  */
-export function resolveSessionID(
+function resolveSessionID(
   userID: string,
   qoderModel: string,
   options?: SimpleStreamOptions,
