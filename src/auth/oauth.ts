@@ -6,7 +6,8 @@ import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
 import { getQoderRefreshURL, getQoderRegionConfig, type QoderMode } from "../region.js";
 import { DEFAULT_TOKEN_TTL_MS, resolveTokenExpiry } from "./expiry.js";
 import { interactiveLogin } from "./login.js";
-import { credentialsFromPat, decodePatRefresh, fetchUserInfo, isPatRefresh } from "./pat.js";
+import { credentialsFromPat, fetchUserInfo } from "./pat.js";
+import { decodeRefresh, encodeDeviceRefresh } from "./refresh.js";
 import { readAuthFile, storeEnvironmentCredentials } from "./storage.js";
 
 export interface QoderCredentials extends OAuthCredentials {
@@ -222,17 +223,16 @@ export async function refreshQoderTokenForMode(
   let refreshed: QoderCredentials;
   // Refresh failures must propagate. Extending local expiry cannot make an
   // expired/revoked upstream token valid and prevents the host from recovering.
-  if (isPatRefresh(credentials.refresh)) {
-    const { pat } = decodePatRefresh(credentials.refresh);
-    if (!pat) throw new Error(`Missing Qoder PAT; run /login ${getQoderRegionConfig(mode).providerID}`);
-    refreshed = (await credentialsFromPat(pat, mode, { signal })) as QoderCredentials;
+  const stored = decodeRefresh(credentials.refresh);
+  if (stored.kind === "pat") {
+    if (!stored.pat) throw new Error(`Missing Qoder PAT; run /login ${getQoderRegionConfig(mode).providerID}`);
+    refreshed = (await credentialsFromPat(stored.pat, mode, { signal })) as QoderCredentials;
   } else {
-    const [refreshToken, storedUserID, storedMachineID] = credentials.refresh.split("|");
-    if (!refreshToken)
-      throw new Error(`Missing Qoder refresh token; run /login ${getQoderRegionConfig(mode).providerID}`);
     const previous = credentials as Partial<QoderCredentials>;
-    const userID = storedUserID || previous.userID || "";
-    const machineID = storedMachineID || previous.machineID || getMachineId();
+    const userID = stored.userID || previous.userID || "";
+    const machineID = stored.machineID || previous.machineID || getMachineId();
+    if (!stored.refreshToken)
+      throw new Error(`Missing Qoder refresh token; run /login ${getQoderRegionConfig(mode).providerID}`);
     const data = await fetchQoderJson<{
       token?: string;
       refresh_token?: string;
@@ -248,14 +248,14 @@ export async function refreshQoderTokenForMode(
           Accept: "application/json",
           "User-Agent": QODER_USER_AGENT,
         },
-        body: JSON.stringify({ refreshToken }),
+        body: JSON.stringify({ refreshToken: stored.refreshToken }),
       },
       { signal },
     );
     if (!data.token) throw new Error("Qoder refresh returned no access token");
     refreshed = {
       ...credentials,
-      refresh: `${data.refresh_token || refreshToken}|${userID}|${machineID}`,
+      refresh: encodeDeviceRefresh(data.refresh_token || stored.refreshToken, userID, machineID),
       access: data.token,
       expires: resolveTokenExpiry(data, DEFAULT_TOKEN_TTL_MS) - 5 * 60 * 1000,
       userID,

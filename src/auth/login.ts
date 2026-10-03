@@ -6,6 +6,7 @@ import { QoderHttpError, withAbort, withRequestTimeout } from "../http.js";
 import { getQoderDeviceLoginURL, getQoderDevicePollURL, getQoderRegionConfig, type QoderMode } from "../region.js";
 import { resolveTokenExpiry } from "./expiry.js";
 import { credentialsFromPat, fetchUserInfo } from "./pat.js";
+import { encodeDeviceRefresh } from "./refresh.js";
 
 export function generatePKCE() {
   const codeVerifier = crypto.randomBytes(32).toString("base64url");
@@ -82,7 +83,7 @@ async function runDeviceFlow(callbacks: OAuthLoginCallbacks, signal: AbortSignal
     signal.throwIfAborted();
     callbacks.onProgress?.("Login successful!");
     return {
-      refresh: `${token.refresh_token}|${token.user_id}|${machineID}`,
+      refresh: encodeDeviceRefresh(token.refresh_token, token.user_id, machineID),
       access: token.token,
       expires: resolveTokenExpiry(token) - 5 * 60 * 1000,
       userID: token.user_id,
