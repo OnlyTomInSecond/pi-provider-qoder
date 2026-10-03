@@ -134,6 +134,29 @@ describe("Qoder model cache", () => {
     expect(getCachedModelConfig("qfmodel", "global")).toBeNull();
   });
 
+  it("keeps the first entry when two display names collapse to one pi id", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            chat: [
+              { key: "gm51model", enable: true, display_name: "GLM 5.2" },
+              { key: "gm52model", enable: true, display_name: "GLM5.2" },
+            ],
+          }),
+      }),
+    );
+
+    await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
+
+    // Both names strip to "GLM5.2"; the picker must not show a duplicate and
+    // the upstream key must resolve deterministically.
+    expect(getCachedModels("global").map((model) => model.id)).toEqual(["GLM5.2"]);
+    expect(getCachedModelConfig("GLM5.2", "global")?.key).toBe("gm51model");
+  });
+
   it("omits catalog entries without a friendly display name", async () => {
     vi.stubGlobal(
       "fetch",
