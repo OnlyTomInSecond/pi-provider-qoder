@@ -23,6 +23,7 @@ import { DELTA_FLUSH_INTERVAL_MS, DeltaCoalescer } from "./delta-coalescer.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
 import { qoderEncodeBodyAsync } from "./encoding.js";
 import { mergeQoderHeaders } from "./request.js";
+import { RequestAbortScope } from "./request-abort-scope.js";
 import { getQoderRunIdentity } from "./run-state.js";
 import { stripThinkingTags, ThinkingTagParser } from "./thinking.js";
 import { ToolCallAccumulator } from "./tool-calls.js";
@@ -140,27 +141,11 @@ export function streamQoder(
   const pushEvent = (event: QoderStreamEvent): void => coalescer.push(event);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let response: Response | undefined;
-  let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  const requestController = new AbortController();
-  const requestTimer =
-    options?.timeoutMs && options.timeoutMs > 0
-      ? setTimeout(() => requestController.abort(new Error("Qoder request timeout")), options.timeoutMs)
-      : undefined;
-  const externalSignal = options?.signal;
-  let removeExternalAbortListener: (() => void) | undefined;
-  if (externalSignal) {
-    const abortFromExternal = (): void => requestController.abort(externalSignal.reason);
-    if (externalSignal.aborted) requestController.abort(externalSignal.reason);
-    else {
-      externalSignal.addEventListener("abort", abortFromExternal, { once: true });
-      removeExternalAbortListener = () => externalSignal.removeEventListener("abort", abortFromExternal);
-    }
-  }
-  const throwIfAborted = (): void => {
-    if (!requestController.signal.aborted) return;
-    const reason = requestController.signal.reason;
-    throw reason instanceof Error ? reason : new Error("Qoder request aborted");
-  };
+  const abortScope = new RequestAbortScope({
+    externalSignal: options?.signal,
+    timeoutMs: options?.timeoutMs,
+  });
+  const throwIfAborted = (): void => abortScope.throwIfAborted();
 
   const resumeAfterTimeout = async (): Promise<boolean> => {
     if (
@@ -299,7 +284,7 @@ export function streamQoder(
       // cache miss would otherwise send uid "qoder-user" and Qoder CN rejects
       // it with "Login expired" (105).
       const ident = await resolveQoderIdentity(accessToken, model.provider, providerMode, {
-        signal: requestController.signal,
+        signal: abortScope.signal,
         fetch: options?.fetch,
         timeoutMs: options?.timeoutMs,
       });
@@ -466,7 +451,7 @@ export function streamQoder(
       // Hooks see the logical JSON payload, not Qoder's encoded wire bytes.
       // Sign only after replacement/mutation so COSY hashes describe the actual body.
       const replacement = options?.onPayload
-        ? await withAbort(Promise.resolve(options.onPayload(reqBody, model)), requestController.signal)
+        ? await withAbort(Promise.resolve(options.onPayload(reqBody, model)), abortScope.signal)
         : undefined;
       const payload = replacement === undefined ? reqBody : replacement;
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -477,7 +462,7 @@ export function streamQoder(
       await yieldToEventLoop();
       // qoderEncodeBodyAsync writes the transformed body straight into a
       // preallocated Buffer, yielding to the event loop on large requests.
-      const encodedBytes = await qoderEncodeBodyAsync(bodyBytes, requestController.signal);
+      const encodedBytes = await qoderEncodeBodyAsync(bodyBytes, abortScope.signal);
       throwIfAborted();
 
       const chatURL = getQoderChatURL(providerMode, model.baseUrl);
@@ -501,13 +486,7 @@ export function streamQoder(
         Number.isFinite(configuredIdleTimeout) && configuredIdleTimeout > 0
           ? configuredIdleTimeout
           : QODER_STREAM_IDLE_TIMEOUT_MS;
-      const resetIdleTimer = (): void => {
-        if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => {
-          requestController.abort(new Error("Qoder stream idle timeout"));
-        }, idleTimeoutMs);
-      };
-      resetIdleTimer();
+      abortScope.startIdleWatch(idleTimeoutMs);
 
       const fetchPromise = (options?.fetch ?? fetch)(chatURL, {
         method: "POST",
@@ -526,16 +505,16 @@ export function streamQoder(
         ),
         // Buffer is a valid Uint8Array at runtime but not in DOM's BodyInit union.
         body: encodedBytes as unknown as BodyInit,
-        signal: requestController.signal,
+        signal: abortScope.signal,
       }).then((received) => {
-        if (requestController.signal.aborted) {
+        if (abortScope.signal.aborted) {
           void received.body?.cancel().catch(() => {});
           throwIfAborted();
         }
         return received;
       });
-      response = await withAbort(fetchPromise, requestController.signal);
-      resetIdleTimer();
+      response = await withAbort(fetchPromise, abortScope.signal);
+      abortScope.resetIdle();
       if (options?.onResponse) {
         await withAbort(
           Promise.resolve(
@@ -547,13 +526,13 @@ export function streamQoder(
               model,
             ),
           ),
-          requestController.signal,
+          abortScope.signal,
         );
       }
       throwIfAborted();
 
       if (!response.ok) {
-        const errText = await readResponseText(response, requestController.signal);
+        const errText = await readResponseText(response, abortScope.signal);
         throw new Error(`Qoder API request failed: ${response.status} ${response.statusText}. Response: ${errText}`);
       }
 
@@ -561,7 +540,7 @@ export function streamQoder(
       if (!reader) throw new Error("No response body");
       const notifyProviderStreamEvent = async (event: unknown): Promise<void> => {
         if (!options?.onProviderStreamEvent) return;
-        await withAbort(Promise.resolve(options.onProviderStreamEvent(event, model)), requestController.signal);
+        await withAbort(Promise.resolve(options.onProviderStreamEvent(event, model)), abortScope.signal);
       };
       const decoder = new TextDecoder();
       let buffer = "";
@@ -651,9 +630,9 @@ export function streamQoder(
       let linesSinceYield = 0;
 
       while (!sawDone) {
-        const { done, value } = await withAbort(reader.read(), requestController.signal);
+        const { done, value } = await withAbort(reader.read(), abortScope.signal);
         throwIfAborted();
-        if (!done) resetIdleTimer();
+        if (!done) abortScope.resetIdle();
 
         buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
         if (buffer.length > MAX_SSE_BUFFER_LENGTH && !buffer.includes("\n")) {
@@ -867,9 +846,7 @@ export function streamQoder(
       } catch {}
     } finally {
       coalescer.dispose();
-      if (requestTimer) clearTimeout(requestTimer);
-      if (idleTimer) clearTimeout(idleTimer);
-      removeExternalAbortListener?.();
+      abortScope.dispose();
       if (reader) void reader.cancel().catch(() => {});
       else if (response) void response.body?.cancel().catch(() => {});
     }
