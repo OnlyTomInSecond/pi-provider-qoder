@@ -52,7 +52,7 @@ describe("ThinkingSink", () => {
       { type: "text", text: "answer" },
     ]);
     const types = events.map((event) => event.type);
-    expect(types).toEqual(["thinking_start", "thinking_delta", "thinking_end", "text_start", "text_delta"]);
+    expect(types).toEqual(["thinking_start", "thinking_delta", "thinking_end", "text_start", "text_delta", "text_end"]);
     expect(types.indexOf("thinking_end")).toBeLessThan(types.indexOf("text_start"));
   });
 

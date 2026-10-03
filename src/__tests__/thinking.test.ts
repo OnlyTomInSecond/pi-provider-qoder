@@ -211,18 +211,21 @@ describe("ThinkingTagParser", () => {
     expect(output.content[1]).toMatchObject({ type: "text", text: "Actual text" });
   });
 
-  // ── getTextBlockIndex ─────────────────────────────────────────────────
+  // ── Text block boundaries ─────────────────────────────────────────────
 
-  it("tracks text block index correctly", () => {
+  it("closes the text block before thinking and on finalize", () => {
     const parser = new ThinkingTagParser(output, stream);
-    expect(parser.getTextBlockIndex()).toBeNull();
+    parser.processChunk("Hello<thinking>thought</thinking> World");
+    parser.finalize();
 
-    parser.processChunk("Hello");
-    expect(parser.getTextBlockIndex()).toBe(0);
-
-    parser.processChunk("<thinking>thought</thinking>");
-    parser.processChunk(" World");
-    expect(parser.getTextBlockIndex()).not.toBeNull();
+    expect(output.content).toEqual([
+      { type: "text", text: "Hello" },
+      { type: "thinking", thinking: "thought" },
+      { type: "text", text: " World" },
+    ]);
+    const ends = pushMock.mock.calls.filter((c) => c[0].type === "text_end").map((c) => c[0].contentIndex);
+    // One close before the thinking block, one at finalize for the trailing text.
+    expect(ends).toEqual([0, 2]);
   });
 
   // ── Stream events ─────────────────────────────────────────────────────
