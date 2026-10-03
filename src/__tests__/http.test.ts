@@ -126,7 +126,7 @@ describe("request deadlines and cancellation", () => {
     const result = await refreshQoderTokenForMode(credentials, "global");
     expect(result).toMatchObject({
       access: "new",
-      refresh: "refresh|user|machine",
+      refresh: "device|refresh|user|machine",
       userID: "user",
       machineID: "machine",
     });
