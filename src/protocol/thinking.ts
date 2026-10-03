@@ -61,6 +61,10 @@ interface FoundTag {
 /**
  * Earliest complete thinking tag in `text`, if any. Openers and closers of
  * every variant compete by position; the earliest one wins.
+ *
+ * Ten `indexOf` scans beat one combined alternation regex here (measured ~3x
+ * faster on a 90KB plain buffer): V8's indexOf is a SIMD memchr, whereas the
+ * regex engine pays per-position alternation cost. Do not "simplify" this.
  */
 function findEarliestTag(text: string): FoundTag | null {
   let best: FoundTag | null = null;
