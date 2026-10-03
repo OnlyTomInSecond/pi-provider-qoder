@@ -14,10 +14,10 @@ import { clearQoderRunRegistry } from "../protocol/run-state.js";
 const lite = staticModels.find((model) => model.id === "Lite") as Model<Api>;
 const identity = { userID: "user-1", name: "Test", email: "t@example.com", machineID: "machine-1" };
 
-function makeContext(systemPrompt = "", tools: Context["tools"] = []): TranscriptContext {
+function makeContext(systemPrompt = "", tools: Context["tools"] = [], userText = "hi"): TranscriptContext {
   return normalizeContext({
     systemPrompt,
-    messages: [{ role: "user", content: "hi" }],
+    messages: [{ role: "user", content: userText }],
     tools,
   } as unknown as Context);
 }
@@ -101,5 +101,18 @@ describe("buildQoderChatRequest", () => {
   it("uses the host session id as the prompt cache key when it fits", () => {
     const request = build({ sessionId: "s1" });
     expect(request.sessionID).toBe("qoder-session-user-1-lite-s1");
+  });
+
+  it("derives a stable fallback session id when the host provides none", () => {
+    const first = build();
+    const second = build();
+    expect(first.sessionID).toBe(second.sessionID);
+    expect(first.sessionID).toMatch(/^qoder-session-[0-9a-f]{16}$/);
+  });
+
+  it("derives a different fallback session id for a different opening turn", () => {
+    const a = build(undefined, lite, { key: "lite" }, makeContext("", [], "first"));
+    const b = build(undefined, lite, { key: "lite" }, makeContext("", [], "second"));
+    expect(a.sessionID).not.toBe(b.sessionID);
   });
 });
