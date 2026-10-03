@@ -1,0 +1,242 @@
+import crypto from "node:crypto";
+import {
+  type Api,
+  clampThinkingLevel,
+  getCurrentSystemMessage,
+  getSystemMessageText,
+  type Model,
+  type SimpleStreamOptions,
+  type TranscriptContext,
+  withoutInitialSystemMessage,
+} from "@earendil-works/pi-ai";
+import { MAX_OUTPUT_TOKENS, type QoderModelEntry } from "../catalog.js";
+import type { QoderMode } from "../region.js";
+import { getQoderRunIdentity } from "./run-state.js";
+import { contentToText, transformMessagesForQoder, transformTools } from "./transform.js";
+
+/** Private option used only between the initial stream and its one resume attempt. */
+export const QODER_RESUME_ATTEMPT = "__qoderResumeAttempt";
+
+/** Maximum length of Qoder's `session_id` (upstream `prompt_cache_key`). */
+const MAX_PROMPT_CACHE_KEY_LENGTH = 64;
+
+type InternalStreamOptions = SimpleStreamOptions & Record<string, unknown>;
+
+/** True while running the internal continuation of a timed-out stream. */
+export function isResumeAttempt(options?: SimpleStreamOptions): boolean {
+  return (options as InternalStreamOptions | undefined)?.[QODER_RESUME_ATTEMPT] === 1;
+}
+
+function stableHash(prefix: string, ...inputs: string[]): string {
+  const hash = crypto.createHash("sha256");
+  hash.update(prefix);
+  for (const input of inputs) {
+    hash.update("\0");
+    hash.update(input);
+  }
+  return hash.digest("hex").slice(0, 16);
+}
+
+/** Resolve the bounded prompt-cache key, preserving it across an internal resume. */
+export function resolveSessionID(userID: string, qoderModel: string, options?: SimpleStreamOptions): string {
+  const supplied = options?.sessionId;
+  if (isResumeAttempt(options) && supplied) return supplied;
+  if (!supplied) return `${stableHash("qoder-session", userID, qoderModel)}-${crypto.randomUUID()}`;
+
+  const readable = `qoder-session-${userID}-${qoderModel}-${supplied}`;
+  return readable.length <= MAX_PROMPT_CACHE_KEY_LENGTH
+    ? readable
+    : `qoder-session-${stableHash("qoder-session", userID, qoderModel, supplied)}`;
+}
+
+export interface QoderRequestIdentity {
+  userID: string;
+  name: string;
+  email: string;
+  machineID: string;
+}
+
+export interface QoderChatRequestInput {
+  model: Model<Api>;
+  context: TranscriptContext;
+  options?: SimpleStreamOptions;
+  providerMode: QoderMode;
+  /** Catalog/static config for `model.id`; `key` must be present. */
+  modelConfig: QoderModelEntry;
+  identity: QoderRequestIdentity;
+}
+
+export interface QoderChatRequest {
+  /** Logical JSON payload seen by `onPayload` and COSY signing. */
+  body: Record<string, unknown>;
+  /** Upstream model key sent to the gateway (`model_config.key`). */
+  upstreamModel: string;
+  /** Session id forwarded as `prompt_cache_key`; stable across a resume. */
+  sessionID: string;
+}
+
+/** Resolve the output cap from the upstream ceiling and any host/pi limits. */
+function resolveMaxTokens(model: Model<Api>, options?: SimpleStreamOptions): number {
+  // Qoder's catalog exposes no per-model output cap, so we use the documented
+  // upstream ceiling (MAX_OUTPUT_TOKENS = 131072) and let pi cap it lower when
+  // the caller sets options.maxTokens (e.g. compaction at 40K). This avoids
+  // truncating reasoning chains / long generations that the 32K default would
+  // cut off.
+  let maxTokens = MAX_OUTPUT_TOKENS;
+  for (const limit of [model.maxTokens, options?.maxTokens]) {
+    if (limit === undefined) continue;
+    if (!Number.isInteger(limit) || limit <= 0) throw new Error("Qoder maxTokens must be a positive integer");
+    maxTokens = Math.min(maxTokens, limit);
+  }
+  return maxTokens;
+}
+
+/**
+ * Map pi's thinking level (`options.reasoning`) to Qoder's request fields.
+ *
+ * Confirmed from @qoder-ai/qodercli: the chat body carries `reasoning_effort`
+ * ("none"|"low"|"medium"|"high"|"xhigh"|"max") and `enable_thinking` (bool)
+ * inside `parameters`, alongside `max_tokens`. This mirrors the pi-ai OpenAI
+ * provider: clamp the requested level to what the model advertises via
+ * `thinkingLevelMap`, then map to the upstream effort name.
+ */
+function buildParameters(
+  model: Model<Api>,
+  modelConfig: QoderModelEntry,
+  options?: SimpleStreamOptions,
+): Record<string, unknown> {
+  const parameters: Record<string, unknown> = { max_tokens: resolveMaxTokens(model, options) };
+  if (options?.temperature !== undefined) parameters.temperature = options.temperature;
+
+  const requestedLevel = options?.reasoning;
+  const clamped = requestedLevel ? clampThinkingLevel(model, requestedLevel) : undefined;
+  const reasoningLevel = clamped === "off" ? undefined : clamped;
+  if (!reasoningLevel) {
+    // No reasoning level selected (or clamped to off): explicitly disable
+    // thinking so the model does not reason by default.
+    parameters.enable_thinking = false;
+    return parameters;
+  }
+
+  parameters.enable_thinking = true;
+  // Effort-based models advertise concrete effort names in the map
+  // (low/medium/xhigh/max). Toggle-only models map every level to
+  // "enabled"/"disabled" and accept no effort value — only the on/off switch
+  // matters, so we send enable_thinking alone.
+  const mapped = model.thinkingLevelMap?.[reasoningLevel];
+  const effort = mapped && mapped !== "enabled" && mapped !== "disabled" ? mapped : reasoningLevel;
+  // Only send reasoning_effort when the upstream model actually exposes effort
+  // levels (thinking_config.enabled.efforts).
+  if (modelConfig.thinking_config?.enabled?.efforts && typeof effort === "string") {
+    parameters.reasoning_effort = effort;
+  }
+  return parameters;
+}
+
+/**
+ * Build the logical Qoder chat payload for one model round.
+ *
+ * Pure with respect to I/O: identity and model config are resolved by the
+ * caller, so the resulting body can be asserted directly in tests instead of
+ * being decoded out of the wire-encoded request.
+ */
+export function buildQoderChatRequest(input: QoderChatRequestInput): QoderChatRequest {
+  const { model, context, options, providerMode, modelConfig, identity } = input;
+  const qoderModel = modelConfig.key;
+  if (!qoderModel) throw new Error(`Unknown Qoder model id: ${model.id}`);
+
+  // 0.99.x passes a normalized TranscriptContext: the system prompt and tool
+  // declarations are folded into the transcript's leading system message
+  // instead of being top-level fields. Read them back with the transcript
+  // helpers, and strip that system message from the list before mapping history
+  // to Qoder's OpenAI-shaped messages. The resolved prompt is then sent as one
+  // leading system message.
+  const transcriptMessages = withoutInitialSystemMessage(context.messages);
+  const normalizedMessages = transformMessagesForQoder(transcriptMessages);
+  // Resolve the current prompt and tool set in a single transcript pass:
+  // getCurrentSystemPrompt() would re-walk the messages (and re-resolve the
+  // tools internally) on top of the getCurrentTools() call below.
+  const currentSystem = getCurrentSystemMessage(context.messages);
+  const systemText = currentSystem ? getSystemMessageText(currentSystem) : "";
+
+  let lastUserText = "";
+  for (let i = normalizedMessages.length - 1; i >= 0; i--) {
+    if (normalizedMessages[i].role === "user") {
+      lastUserText = contentToText(normalizedMessages[i].content);
+      break;
+    }
+  }
+
+  // Use a stable session id when pi provides one (per agent session) so the
+  // Qoder server can maintain prompt cache affinity across consecutive
+  // requests. Qoder forwards session_id as prompt_cache_key upstream.
+  const sessionID = resolveSessionID(identity.userID, qoderModel, options);
+
+  const currentTools = currentSystem?.toolsAdded ?? [];
+  const toolsRaw = currentTools.length > 0 ? transformTools(currentTools) : undefined;
+  const parameters = buildParameters(model, modelConfig, options);
+
+  // Qoder groups billing/records per agentic "run". qodercli keeps one
+  // request_set_id + business.id per run (created at run start, threaded through
+  // every tool round/retry/subagent); infer the run boundary from the message
+  // tail and reuse the run identity.
+  const { requestSetId, business } = getQoderRunIdentity({
+    mode: providerMode,
+    model: qoderModel,
+    sessionId: sessionID,
+    messages: normalizedMessages,
+    lastUserText,
+    resume: isResumeAttempt(options),
+    product: "cli",
+  });
+  const requestID = crypto.randomUUID();
+
+  const body: Record<string, unknown> = {
+    // request_id / chat_record_id are per-request (qodercli sets
+    // chat_record_id = request_id); request_set_id is the run-scoped id.
+    request_id: requestID,
+    request_set_id: requestSetId,
+    chat_record_id: requestID,
+    session_id: sessionID,
+    stream: true,
+    chat_task: "FREE_INPUT",
+    is_reply: true,
+    is_retry: isResumeAttempt(options),
+    source: 1,
+    version: "3",
+    session_type: "qodercli",
+    agent_id: "agent_common",
+    task_id: "common",
+    code_language: "",
+    chat_prompt: "",
+    image_urls: null,
+    aliyun_user_type: "",
+    // Qoder's server ignores the top-level `system` field (verified: the model
+    // never sees it). Inject the system prompt as a leading role:system message
+    // instead, which the server does honor.
+    system: "",
+    messages: systemText ? [{ role: "system", content: systemText }, ...normalizedMessages] : normalizedMessages,
+    tools: toolsRaw || [],
+    parameters,
+    chat_context: {
+      chatPrompt: "",
+      imageUrls: null,
+      extra: {
+        context: [],
+        modelConfig: {
+          key: qoderModel,
+          is_reasoning: !!modelConfig.is_reasoning,
+        },
+        originalContent: lastUserText,
+      },
+      features: [],
+      text: lastUserText,
+    },
+    model_config: modelConfig,
+    // Stable per run: same id/name/begin_at across the run's requests; stage
+    // advances init -> start -> processing like qodercli's lifecycle.
+    business,
+  };
+
+  return { body, upstreamModel: qoderModel, sessionID };
+}

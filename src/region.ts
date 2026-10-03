@@ -64,6 +64,11 @@ export function getQoderBaseUrl(mode: QoderMode): string {
   return getQoderRegionConfig(mode).baseUrl;
 }
 
+/** Map a pi provider id back to its region mode (inverse of `providerID`). */
+export function getQoderModeForProvider(providerID: string): QoderMode {
+  return providerID === QODER_REGIONS.cn.providerID ? "cn" : "global";
+}
+
 export function getQoderModelListURL(mode: QoderMode): string {
   return `${getQoderBaseUrl(mode)}algo/api/v2/model/list?Encode=1`;
 }
