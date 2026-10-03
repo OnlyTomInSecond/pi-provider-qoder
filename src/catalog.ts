@@ -544,6 +544,17 @@ async function fetchAndCacheModelList(
       if (!key || !entry.enable || !entry.display_name) continue;
 
       const display = entry.display_name;
+      // The pi-visible id is the whitespace-stripped display name, so two
+      // entries whose names differ only by whitespace would collide and leave
+      // one upstream key unreachable (the picker would show a duplicate while
+      // both requests resolve to whichever entry won the config map). Keep the
+      // first entry and skip later collisions; the read-side index uses the
+      // same first-wins rule.
+      const modelId = toQoderModelId(display);
+      if (configs[modelId]) {
+        debugLog(`model catalog: duplicate pi id "${modelId}" (key ${key}); keeping the first entry`);
+        continue;
+      }
       // Prefer the largest selectable context option the catalog advertises
       // (e.g. 1M when 200K/400K/1M are offered). If none is advertised, use
       // DEFAULT_CONTEXT_WINDOW rather than the stale 180K `max_input_tokens`
@@ -558,7 +569,7 @@ async function fetchAndCacheModelList(
       // Both regions expose display_name (whitespace-stripped) as the sole
       // pi-visible id. The config stores the upstream key under that id for
       // request-time use.
-      const modelInfo = { id: toQoderModelId(display), name: display };
+      const modelInfo = { id: modelId, name: display };
 
       configs[modelInfo.id] = entry;
 
