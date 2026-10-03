@@ -43,7 +43,6 @@ export interface QoderRunBusiness {
 }
 
 interface QoderRunState {
-  key: string;
   requestSetId: string;
   business: QoderRunBusiness;
 }
@@ -145,7 +144,6 @@ export function getQoderRunIdentity(input: QoderRunRequest): QoderRunIdentity {
   let state = continuation ? runStates.get(key) : undefined;
   if (!state) {
     state = {
-      key,
       requestSetId: crypto.randomUUID(),
       business: createBusiness(input.product, input.lastUserText),
     };
