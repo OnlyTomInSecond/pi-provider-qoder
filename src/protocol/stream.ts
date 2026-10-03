@@ -31,17 +31,32 @@ type QoderStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
 const QODER_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const MAX_SSE_BUFFER_LENGTH = 8 * 1024 * 1024;
 
-function mapFinishReason(reason: string): "stop" | "length" | "toolUse" {
+interface MappedFinishReason {
+  stopReason: "stop" | "length" | "toolUse" | "error";
+  errorMessage?: string;
+}
+
+/**
+ * Map Qoder's OpenAI-style `finish_reason` to a pi stop reason. Unknown values
+ * degrade to `error` with a diagnostic (like pi's own OpenAI provider) instead
+ * of throwing mid-stream, so already-streamed content is still finalized.
+ */
+function mapFinishReason(reason: string): MappedFinishReason {
   switch (reason) {
     case "stop":
-      return "stop";
+    case "end":
+      return { stopReason: "stop" };
     case "length":
-      return "length";
+      return { stopReason: "length" };
     case "tool_calls":
     case "function_call":
-      return "toolUse";
+      return { stopReason: "toolUse" };
+    case "content_filter":
+      return { stopReason: "error", errorMessage: "Qoder finish_reason: content_filter" };
+    case "network_error":
+      return { stopReason: "error", errorMessage: "Qoder finish_reason: network_error" };
     default:
-      throw new Error(`Qoder generation ended with ${reason}`);
+      return { stopReason: "error", errorMessage: `Qoder finish_reason: ${reason}` };
   }
 }
 
@@ -442,7 +457,9 @@ export function streamQoder(
 
               if (choice.finish_reason) {
                 output.rawStopReason = String(choice.finish_reason);
-                output.stopReason = mapFinishReason(output.rawStopReason);
+                const mapped = mapFinishReason(output.rawStopReason);
+                output.stopReason = mapped.stopReason;
+                if (mapped.errorMessage) output.errorMessage = mapped.errorMessage;
               }
             }
           } catch (e) {

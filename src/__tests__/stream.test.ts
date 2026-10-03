@@ -357,6 +357,21 @@ describe("streamQoder", () => {
     expect(msg.stopReason).toBe("length");
   });
 
+  it("degrades an unknown finish_reason to an error instead of throwing mid-stream", async () => {
+    const sse =
+      sseEnvelope(chunk({ content: "partial", role: "assistant" })) +
+      sseEnvelope(finishChunk("content_filter")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+
+    const error = events.find((event) => event.type === "error") as { error: AssistantMessage };
+    expect(error.error.stopReason).toBe("error");
+    expect(error.error.errorMessage).toContain("content_filter");
+    // The text streamed before the terminal reason is preserved.
+    expect(error.error.content).toEqual([{ type: "text", text: "partial" }]);
+  });
+
   it("captures usage, responseId and responseModel from the finish chunk", async () => {
     const sse =
       sseEnvelope(chunk({ content: "OK", role: "assistant" })) +
