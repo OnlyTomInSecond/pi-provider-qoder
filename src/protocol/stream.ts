@@ -19,6 +19,7 @@ import { buildAuthHeaders, getMachineId } from "../cosy.js";
 import { readResponseText, withAbort } from "../http.js";
 import { getQoderChatURL, getQoderRegionConfig } from "../region.js";
 import { yieldToEventLoop } from "../yield.js";
+import { DELTA_FLUSH_INTERVAL_MS, DeltaCoalescer } from "./delta-coalescer.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
 import { qoderEncodeBodyAsync } from "./encoding.js";
 import { mergeQoderHeaders } from "./request.js";
@@ -37,15 +38,6 @@ function isThinkingRequested(reasoning: unknown): boolean {
 
 const SSE_LINES_PER_YIELD = 32;
 const MAX_PROMPT_CACHE_KEY_LENGTH = 64;
-
-/**
- * Minimum wall-clock interval between coalesced delta pushes. Hosts (pi) rebuild
- * and re-layout the whole text/thinking block on every `message_update`, so
- * emitting one delta per SSE line makes rendering quadratic in the response
- * length. Coalescing deltas to ~20 pushes/second keeps the UI smooth while
- * bounding that render work. Override with QODER_STREAM_DELTA_INTERVAL_MS.
- */
-const DELTA_FLUSH_INTERVAL_MS = 50;
 
 function stableHash(prefix: string, ...inputs: string[]): string {
   const hash = crypto.createHash("sha256");
@@ -94,7 +86,6 @@ function hasGeneratedContent(message: AssistantMessage): boolean {
   );
 }
 type QoderStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
-type QoderDeltaEvent = Extract<QoderStreamEvent, { type: "text_delta" | "thinking_delta" | "toolcall_delta" }>;
 
 const QODER_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const MAX_SSE_BUFFER_LENGTH = 8 * 1024 * 1024;
@@ -138,9 +129,6 @@ export function streamQoder(
     timestamp: Date.now(),
   };
 
-  let pendingDelta: QoderDeltaEvent | null = null;
-  let lastDeltaFlushAt = Date.now();
-  let deltaTimer: ReturnType<typeof setTimeout> | undefined;
   const configuredDeltaInterval = Number(
     options?.env?.QODER_STREAM_DELTA_INTERVAL_MS ?? process.env.QODER_STREAM_DELTA_INTERVAL_MS,
   );
@@ -148,49 +136,8 @@ export function streamQoder(
     Number.isFinite(configuredDeltaInterval) && configuredDeltaInterval >= 0
       ? configuredDeltaInterval
       : DELTA_FLUSH_INTERVAL_MS;
-  /** Push the coalesced delta, unless we pushed one within the throttle window. */
-  const flushPendingDelta = (force = false): void => {
-    if (!pendingDelta) return;
-    const now = Date.now();
-    if (!force && now - lastDeltaFlushAt < deltaIntervalMs) return;
-    if (deltaTimer) clearTimeout(deltaTimer);
-    deltaTimer = undefined;
-    stream.push(pendingDelta);
-    pendingDelta = null;
-    lastDeltaFlushAt = now;
-  };
-  const scheduleDeltaFlush = (): void => {
-    flushPendingDelta();
-    if (!pendingDelta || deltaTimer) return;
-    deltaTimer = setTimeout(
-      () => {
-        deltaTimer = undefined;
-        flushPendingDelta(true);
-      },
-      Math.max(0, deltaIntervalMs - (Date.now() - lastDeltaFlushAt)),
-    );
-  };
-  const pushEvent = (event: QoderStreamEvent): void => {
-    if (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_delta") {
-      if (pendingDelta && pendingDelta.type === event.type && pendingDelta.contentIndex === event.contentIndex) {
-        // Mutate in place rather than spreading a new object on every merged
-        // delta: coalescing is the hottest path in a streamed response and the
-        // object has no other references consumers rely on.
-        pendingDelta.delta += event.delta;
-        scheduleDeltaFlush();
-        return;
-      }
-      // A different block/type must keep its ordering, so flush unconditionally.
-      flushPendingDelta(true);
-      pendingDelta = event;
-      scheduleDeltaFlush();
-      return;
-    }
-    // Any non-delta event is an ordering boundary (start/end/done/error).
-    flushPendingDelta(true);
-    stream.push(event);
-  };
-
+  const coalescer = new DeltaCoalescer(deltaIntervalMs, (event) => stream.push(event));
+  const pushEvent = (event: QoderStreamEvent): void => coalescer.push(event);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let response: Response | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -732,7 +679,7 @@ export function streamQoder(
           // coalesces deltas instead of re-rendering once per SSE line.
           if (++linesSinceYield >= SSE_LINES_PER_YIELD) {
             linesSinceYield = 0;
-            flushPendingDelta();
+            coalescer.flush();
             await yieldToEventLoop();
             throwIfAborted();
           }
@@ -919,7 +866,7 @@ export function streamQoder(
         stream.end();
       } catch {}
     } finally {
-      if (deltaTimer) clearTimeout(deltaTimer);
+      coalescer.dispose();
       if (requestTimer) clearTimeout(requestTimer);
       if (idleTimer) clearTimeout(idleTimer);
       removeExternalAbortListener?.();
