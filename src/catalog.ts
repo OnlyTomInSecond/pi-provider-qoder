@@ -88,58 +88,125 @@ interface ParsedModelCache {
   configs?: Record<string, QoderModelEntry>;
 }
 
-/** In-memory cache keyed by absolute cache path (HOME-safe across tests). */
-const modelCacheMem = new Map<string, ParsedModelCache | null>();
-
 /**
- * In-memory displayId -> config index keyed by absolute cache path, so
- * getCachedModelConfig resolves in O(1) instead of scanning every config entry
- * on each request. Derived from the memoized cache and invalidated on write
- * (writeParsedModelCache) or clear (clearQoderModelsMemCache).
+ * Per-cache-file in-memory state.
+ *
+ * One instance per absolute cache path (so relocating $HOME in tests yields a
+ * fresh store) that keeps the parsed cache, its derived displayId index, the
+ * static-seed indexes and the in-flight catalog fetches together. Rewriting the
+ * cache invalidates the derived index in one place, replacing the previous
+ * four module-level maps whose consistency had to be maintained by hand.
  */
-const configIndexMem = new Map<string, Map<string, QoderModelEntry>>();
+class QoderCatalogStore {
+  private loaded = false;
+  private data: ParsedModelCache | null = null;
+  private configIndex: Map<string, QoderModelEntry> | undefined;
+  private readonly staticByUpstreamKey = new Map<string, QoderModelDef>();
+  private readonly staticById = new Map<string, QoderModelDef>();
+  private readonly inflight = new Map<string, Promise<void>>();
 
-/**
- * In-flight model-catalog fetches keyed by cache path **and account**. Multiple
- * callers within one process (auto-login, session_start, login, token refresh)
- * can fire updateQoderModelsCache at roughly the same time; this coalesces the
- * same-account ones into a single network request instead of re-fetching the
- * model list per caller, while keeping different accounts separate.
- */
-const inflightModelUpdates = new Map<string, Promise<void>>();
+  constructor(readonly mode: QoderMode) {}
+
+  /** Parsed cache file, memoized until the store is cleared. */
+  read(): ParsedModelCache | null {
+    if (this.loaded) return this.data;
+    this.loaded = true;
+    const cachePath = getQoderCachePath(this.mode);
+    if (!existsSync(cachePath)) {
+      this.data = null;
+      return null;
+    }
+    try {
+      this.data = JSON.parse(readFileSync(cachePath, "utf8")) as ParsedModelCache;
+    } catch {
+      this.data = null;
+    }
+    return this.data;
+  }
+
+  write(data: ParsedModelCache): void {
+    const cachePath = getQoderCachePath(this.mode);
+    mkdirSync(dirname(cachePath), { recursive: true });
+    writeFileSync(cachePath, JSON.stringify(data, null, 2), "utf-8");
+    this.data = data;
+    this.loaded = true;
+    // The configs changed, so any previously built displayId index is stale.
+    this.configIndex = undefined;
+  }
+
+  /**
+   * Memoized pi model id -> catalog config index, so getCachedModelConfig
+   * resolves in O(1) instead of scanning every config entry per request. Both
+   * cache shapes are handled: the new cache keys by friendly id, legacy caches
+   * key by raw upstream key with the display name inside the entry. Only
+   * display-name-derived ids are indexed, so raw keys never resolve.
+   */
+  configs(): Map<string, QoderModelEntry> {
+    if (this.configIndex) return this.configIndex;
+    const index = new Map<string, QoderModelEntry>();
+    const configs = this.read()?.configs;
+    if (configs && typeof configs === "object") {
+      for (const entry of Object.values(configs)) {
+        if (!entry || typeof entry !== "object" || !entry.display_name) continue;
+        const displayId = toQoderModelId(entry.display_name);
+        if (displayId && displayId !== "QoderModel" && !index.has(displayId)) {
+          // Fold in the max-context default once, at index build time, instead
+          // of rebuilding context_config on every request.
+          index.set(displayId, withMaxContextAsDefault(entry as QoderModelEntry));
+        }
+      }
+    }
+    this.configIndex = index;
+    return index;
+  }
+
+  /** Lazily built index over the static fallback catalog for this mode. */
+  staticSeeds(by: "upstreamKey" | "id"): Map<string, QoderModelDef> {
+    const index = by === "upstreamKey" ? this.staticByUpstreamKey : this.staticById;
+    if (index.size > 0) return index;
+    for (const model of this.mode === "cn" ? staticCnModels : staticModels) {
+      const key = by === "upstreamKey" ? model.upstreamKey : model.id;
+      if (key && !index.has(key)) index.set(key, model);
+    }
+    return index;
+  }
+
+  /**
+   * Coalesce a catalog fetch per account: multiple callers within one process
+   * (auto-login, session_start, login, token refresh) join one network request,
+   * while different accounts stay separate so the cache is stamped correctly.
+   */
+  runUpdate(userID: string, task: () => Promise<void>): Promise<void> {
+    const existing = this.inflight.get(userID);
+    if (existing) return existing;
+    const promise = (async () => {
+      try {
+        await task();
+      } finally {
+        this.inflight.delete(userID);
+      }
+    })();
+    this.inflight.set(userID, promise);
+    return promise;
+  }
+}
+
+/** Process-memory stores keyed by absolute cache path (HOME-safe across tests). */
+const catalogStores = new Map<string, QoderCatalogStore>();
+
+function getCatalogStore(mode: QoderMode): QoderCatalogStore {
+  const cachePath = getQoderCachePath(mode);
+  let store = catalogStores.get(cachePath);
+  if (!store) {
+    store = new QoderCatalogStore(mode);
+    catalogStores.set(cachePath, store);
+  }
+  return store;
+}
 
 /** Clear process-memory model caches (also used by tests that mutate cache files). */
 export function clearQoderModelsMemCache(): void {
-  modelCacheMem.clear();
-  configIndexMem.clear();
-}
-
-function readParsedModelCache(mode: QoderMode): ParsedModelCache | null {
-  const cachePath = getQoderCachePath(mode);
-  if (modelCacheMem.has(cachePath)) {
-    return modelCacheMem.get(cachePath) ?? null;
-  }
-  if (!existsSync(cachePath)) {
-    modelCacheMem.set(cachePath, null);
-    return null;
-  }
-  try {
-    const data = JSON.parse(readFileSync(cachePath, "utf8")) as ParsedModelCache;
-    modelCacheMem.set(cachePath, data);
-    return data;
-  } catch {
-    modelCacheMem.set(cachePath, null);
-    return null;
-  }
-}
-
-function writeParsedModelCache(mode: QoderMode, data: ParsedModelCache): void {
-  const cachePath = getQoderCachePath(mode);
-  mkdirSync(dirname(cachePath), { recursive: true });
-  writeFileSync(cachePath, JSON.stringify(data, null, 2), "utf-8");
-  modelCacheMem.set(cachePath, data);
-  // The configs changed, so any previously built displayId index is stale.
-  configIndexMem.delete(cachePath);
+  catalogStores.clear();
 }
 
 /**
@@ -327,34 +394,11 @@ function buildThinkingLevelMap(entry: QoderModelEntry): ThinkingLevelMap | undef
   return undefined;
 }
 
-/**
- * Lazily built indexes over the static fallback catalogs. `getCachedModels`
- * maps every cached entry back to a seed (by upstream key) and
- * `getCachedModelConfig` resolves a fallback by public id; both used to run a
- * linear `.find` per call. The seed arrays are module constants, so the maps
- * are built once per mode.
- */
-const staticSeedByUpstreamKey = new Map<QoderMode, Map<string, QoderModelDef>>();
-const staticSeedById = new Map<QoderMode, Map<string, QoderModelDef>>();
-
-function getStaticSeedIndex(mode: QoderMode, by: "upstreamKey" | "id"): Map<string, QoderModelDef> {
-  const store = by === "upstreamKey" ? staticSeedByUpstreamKey : staticSeedById;
-  const existing = store.get(mode);
-  if (existing) return existing;
-
-  const index = new Map<string, QoderModelDef>();
-  for (const model of mode === "cn" ? staticCnModels : staticModels) {
-    const key = by === "upstreamKey" ? model.upstreamKey : model.id;
-    if (key && !index.has(key)) index.set(key, model);
-  }
-  store.set(mode, index);
-  return index;
-}
-
 export function getCachedModels(mode: QoderMode): QoderModelDef[] {
-  const data = readParsedModelCache(mode);
+  const store = getCatalogStore(mode);
+  const data = store.read();
   if (data && Array.isArray(data.models)) {
-    const staticByKey = getStaticSeedIndex(mode, "upstreamKey");
+    const staticByKey = store.staticSeeds("upstreamKey");
     const models = data.models.map((model: QoderModelDef) => {
       const config = data.configs?.[model.id] as QoderModelEntry | undefined;
       const display = config?.display_name;
@@ -374,44 +418,20 @@ export function getCachedModels(mode: QoderMode): QoderModelDef[] {
 }
 
 /**
- * Build (once, then memoize) a map from pi model id (display-name-derived) to
- * its catalog config. Both cache shapes are handled uniformly: the new cache
- * already keys configs by the friendly id, while legacy caches key by the raw
- * upstream key and carry the display name inside each entry. Only
- * display-name-derived ids are indexed, so raw upstream keys (e.g. `lite`)
- * never resolve to a public model id — matching the previous behavior. The
- * index is derived from the memoized cache, so it keeps serving after the cache
- * file is removed, and is dropped whenever the cache is rewritten or cleared.
+ * Lazily built indexes over the static fallback catalogs. `getCachedModels`
+ * maps every cached entry back to a seed (by upstream key) and
+ * `getCachedModelConfig` resolves a fallback by public id; both used to run a
+ * linear `.find` per call. The seed arrays are module constants, so the maps
+ * are built once per store (see QoderCatalogStore.staticSeeds).
  */
-function getConfigIndex(mode: QoderMode): Map<string, QoderModelEntry> {
-  const cachePath = getQoderCachePath(mode);
-  const existing = configIndexMem.get(cachePath);
-  if (existing) return existing;
-
-  const index = new Map<string, QoderModelEntry>();
-  const configs = readParsedModelCache(mode)?.configs;
-  if (configs && typeof configs === "object") {
-    for (const entry of Object.values(configs)) {
-      if (!entry || typeof entry !== "object" || !entry.display_name) continue;
-      const displayId = toQoderModelId(entry.display_name);
-      if (displayId && displayId !== "QoderModel" && !index.has(displayId)) {
-        // Fold in the max-context default once, at index build time, instead of
-        // rebuilding context_config on every request in getCachedModelConfig.
-        index.set(displayId, withMaxContextAsDefault(entry as QoderModelEntry));
-      }
-    }
-  }
-  configIndexMem.set(cachePath, index);
-  return index;
-}
-
 export function getCachedModelConfig(modelId: string, mode: QoderMode): QoderModelEntry | null {
+  const store = getCatalogStore(mode);
   // O(1) lookup against the memoized displayId index (no per-request scan of the
   // whole config list, which could be hundreds of entries).
-  const config = getConfigIndex(mode).get(modelId);
+  const config = store.configs().get(modelId);
   if (config) return config;
 
-  const staticModel = getStaticSeedIndex(mode, "id").get(modelId);
+  const staticModel = store.staticSeeds("id").get(modelId);
   if (staticModel) {
     return {
       key: staticModel.upstreamKey || modelId,
@@ -458,7 +478,7 @@ function withMaxContextAsDefault(entry: QoderModelEntry): QoderModelEntry {
 }
 
 export function isCacheStale(mode: QoderMode, userID?: string): boolean {
-  const data = readParsedModelCache(mode);
+  const data = getCatalogStore(mode).read();
   if (!data || typeof data.updatedAt !== "number") return true;
   // Stale if the cache belongs to another account: Qoder entitlements (and
   // therefore the advertised model list) are per account. A legacy cache with
@@ -471,11 +491,10 @@ export function isCacheStale(mode: QoderMode, userID?: string): boolean {
 /**
  * Refresh the model catalog for `mode` from the live /model/list endpoint.
  * Concurrent calls for the same mode **and account** within one process are
- * coalesced into a single network request (see inflightModelUpdates), so a
- * startup auto-login, a session_start hook and a token refresh firing together
- * only fetch once. Account identity is part of the key: the result is cached
- * per account, so joining another account's in-flight request would stamp the
- * wrong userID onto this account's cache.
+ * coalesced into a single network request (see QoderCatalogStore.runUpdate), so
+ * a startup auto-login, a session_start hook and a token refresh firing
+ * together only fetch once. The store is per cache file and the in-flight key
+ * includes the account, so joining another account's request is impossible.
  * Network errors are swallowed (returns normally) so callers stay best-effort.
  */
 export async function updateQoderModelsCache(
@@ -489,19 +508,7 @@ export async function updateQoderModelsCache(
   signal?.throwIfAborted();
   // Independently cancellable callers must not abort another caller's work.
   if (signal) return fetchAndCacheModelList(authToken, userID, name, email, mode, signal);
-  const inflightKey = `${getQoderCachePath(mode)}:${userID}`;
-  const inflight = inflightModelUpdates.get(inflightKey);
-  if (inflight) return inflight;
-
-  const promise = (async () => {
-    try {
-      await fetchAndCacheModelList(authToken, userID, name, email, mode);
-    } finally {
-      inflightModelUpdates.delete(inflightKey);
-    }
-  })();
-  inflightModelUpdates.set(inflightKey, promise);
-  return promise;
+  return getCatalogStore(mode).runUpdate(userID, () => fetchAndCacheModelList(authToken, userID, name, email, mode));
 }
 
 async function fetchAndCacheModelList(
@@ -599,7 +606,7 @@ async function fetchAndCacheModelList(
       configs,
     };
 
-    writeParsedModelCache(mode, cacheData);
+    getCatalogStore(mode).write(cacheData);
   } catch (error) {
     signal?.throwIfAborted();
     debugLog("model catalog refresh failed", error);
