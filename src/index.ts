@@ -7,7 +7,14 @@ import {
   refreshQoderTokenForMode,
 } from "./auth/oauth.js";
 import { fetchQoderUsageForMode } from "./auth/usage.js";
-import { getCachedModels, isCacheStale, staticCnModels, staticModels, updateQoderModelsCache } from "./catalog.js";
+import {
+  getCachedModels,
+  isCacheStale,
+  staticCnModels,
+  staticModels,
+  updateQoderModelsCache,
+  withPriceFactorLabel,
+} from "./catalog.js";
 import { debugLog } from "./debug.js";
 import { streamQoder } from "./protocol/stream.js";
 import { getQoderBaseUrl, getQoderRegionConfig, QODER_MODES, type QoderMode } from "./region.js";
@@ -44,6 +51,7 @@ function modelsForProvider(mode: QoderMode, providerID: string): QoderProviderMo
 
   return modelsToUse.map((m) => ({
     ...m,
+    name: withPriceFactorLabel(m.name, m.priceFactor),
     provider: providerID,
     baseUrl: getQoderBaseUrl(mode),
   }));
