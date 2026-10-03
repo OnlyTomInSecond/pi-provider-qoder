@@ -6,6 +6,7 @@ import {
   staticCnModels,
   staticModels,
   toQoderModelId,
+  withPriceFactorLabel,
   ZERO_COST,
 } from "../catalog.js";
 
@@ -155,6 +156,18 @@ describe("toQoderModelId", () => {
   it("uses a stable fallback when the display name is absent", () => {
     expect(toQoderModelId()).toBe("QoderModel");
     expect(toQoderModelId("")).toBe("QoderModel");
+  });
+});
+
+describe("withPriceFactorLabel", () => {
+  it("appends the Credit multiplier for the picker", () => {
+    expect(withPriceFactorLabel("Qwen3.8-Max", 0.2)).toBe("Qwen3.8-Max (×0.2)");
+    // 0 is a real multiplier, not a missing value.
+    expect(withPriceFactorLabel("Efficient", 0)).toBe("Efficient (×0)");
+  });
+
+  it("leaves the name untouched when the catalog omits the multiplier", () => {
+    expect(withPriceFactorLabel("Kimi-K3")).toBe("Kimi-K3");
   });
 });
 
