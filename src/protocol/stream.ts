@@ -12,6 +12,7 @@ import { getCachedModelConfig } from "../catalog.js";
 import { buildAuthHeaders, getMachineId } from "../cosy.js";
 import { readResponseText, withAbort } from "../http.js";
 import { getQoderChatURL, getQoderModeForProvider, getQoderRegionConfig } from "../region.js";
+import { MAX_STREAM_BUFFER_LENGTH, readNumericOption } from "../util.js";
 import { yieldToEventLoop } from "../yield.js";
 import { DELTA_FLUSH_INTERVAL_MS, DeltaCoalescer } from "./delta-coalescer.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
@@ -29,7 +30,6 @@ type QoderAssistantUsage = AssistantMessage["usage"] & QoderCreditsUsage;
 const SSE_LINES_PER_YIELD = 32;
 type QoderStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
 const QODER_STREAM_IDLE_TIMEOUT_MS = 120_000;
-const MAX_SSE_BUFFER_LENGTH = 8 * 1024 * 1024;
 
 interface MappedFinishReason {
   stopReason: "stop" | "length" | "toolUse" | "error";
@@ -85,13 +85,12 @@ export function streamQoder(
     timestamp: Date.now(),
   };
 
-  const configuredDeltaInterval = Number(
-    options?.env?.QODER_STREAM_DELTA_INTERVAL_MS ?? process.env.QODER_STREAM_DELTA_INTERVAL_MS,
+  const deltaIntervalMs = readNumericOption(
+    "QODER_STREAM_DELTA_INTERVAL_MS",
+    options?.env,
+    DELTA_FLUSH_INTERVAL_MS,
+    (value) => Number.isFinite(value) && value >= 0,
   );
-  const deltaIntervalMs =
-    Number.isFinite(configuredDeltaInterval) && configuredDeltaInterval >= 0
-      ? configuredDeltaInterval
-      : DELTA_FLUSH_INTERVAL_MS;
   const coalescer = new DeltaCoalescer(deltaIntervalMs, (event) => stream.push(event));
   const pushEvent = (event: QoderStreamEvent): void => coalescer.push(event);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -211,13 +210,12 @@ export function streamQoder(
       const modelSource = outgoingConfig?.source || modelConfig.source || "system";
       // Resolve the (optional) idle-timeout override once per request instead of
       // re-reading process.env on every streamed chunk.
-      const configuredIdleTimeout = Number(
-        options?.env?.QODER_STREAM_IDLE_TIMEOUT_MS ?? process.env.QODER_STREAM_IDLE_TIMEOUT_MS,
+      const idleTimeoutMs = readNumericOption(
+        "QODER_STREAM_IDLE_TIMEOUT_MS",
+        options?.env,
+        QODER_STREAM_IDLE_TIMEOUT_MS,
+        (value) => Number.isFinite(value) && value > 0,
       );
-      const idleTimeoutMs =
-        Number.isFinite(configuredIdleTimeout) && configuredIdleTimeout > 0
-          ? configuredIdleTimeout
-          : QODER_STREAM_IDLE_TIMEOUT_MS;
       abortScope.startIdleWatch(idleTimeoutMs);
 
       const fetchPromise = (options?.fetch ?? fetch)(chatURL, {
@@ -331,8 +329,8 @@ export function streamQoder(
         if (!done) abortScope.resetIdle();
 
         buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-        if (buffer.length > MAX_SSE_BUFFER_LENGTH && !buffer.includes("\n")) {
-          throw new Error(`Qoder SSE buffer exceeded ${MAX_SSE_BUFFER_LENGTH} characters without a complete line`);
+        if (buffer.length > MAX_STREAM_BUFFER_LENGTH && !buffer.includes("\n")) {
+          throw new Error(`Qoder SSE buffer exceeded ${MAX_STREAM_BUFFER_LENGTH} characters without a complete line`);
         }
 
         const lines = buffer.split("\n");
@@ -342,8 +340,8 @@ export function streamQoder(
           lines.push(buffer);
           buffer = "";
         }
-        if (buffer.length > MAX_SSE_BUFFER_LENGTH) {
-          throw new Error(`Qoder SSE buffer exceeded ${MAX_SSE_BUFFER_LENGTH} characters without a complete line`);
+        if (buffer.length > MAX_STREAM_BUFFER_LENGTH) {
+          throw new Error(`Qoder SSE buffer exceeded ${MAX_STREAM_BUFFER_LENGTH} characters without a complete line`);
         }
 
         for (const rawLine of lines) {
