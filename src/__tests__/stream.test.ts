@@ -142,6 +142,15 @@ describe("streamQoder", () => {
     expect(text && "text" in text ? text.text : "").toBe("OK");
   });
 
+  it("closes the streamed text block with a text_end event", async () => {
+    globalThis.fetch = mockFetch(SUCCESS_SSE);
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    const types = events.map((event) => event.type);
+    expect(types).toContain("text_start");
+    expect(types).toContain("text_end");
+    expect(types.indexOf("text_end")).toBeLessThan(types.indexOf("done"));
+  });
+
   it("forwards tools and system prompt folded into the normalized transcript", async () => {
     // Regression for the 0.86.0 TranscriptContext migration: the system prompt
     // and tool declarations no longer arrive as top-level Context fields but as
