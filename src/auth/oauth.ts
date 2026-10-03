@@ -1,6 +1,6 @@
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { isCacheStale, updateQoderModelsCache } from "../catalog.js";
-import { getMachineId } from "../cosy.js";
+import { getMachineId, QODER_USER_AGENT } from "../cosy.js";
 import { debugLog } from "../debug.js";
 import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
 import { getQoderRefreshURL, getQoderRegionConfig, type QoderMode } from "../region.js";
@@ -246,7 +246,7 @@ export async function refreshQoderTokenForMode(
           "Content-Type": "application/json",
           Authorization: `Bearer ${credentials.access}`,
           Accept: "application/json",
-          "User-Agent": "pi-provider-qoder",
+          "User-Agent": QODER_USER_AGENT,
         },
         body: JSON.stringify({ refreshToken }),
       },
