@@ -5,6 +5,7 @@ import type {
   TextContent,
   ThinkingContent,
 } from "@earendil-works/pi-ai";
+import { escapeRegExp } from "../util.js";
 
 export const THINKING_TAG_VARIANTS: Array<{ open: string; close: string }> = [
   { open: "<thinking>", close: "</thinking>" },
@@ -19,10 +20,6 @@ export const THINKING_TAG_VARIANTS: Array<{ open: string; close: string }> = [
 
 /** Every opener/closer string that can appear in the text channel. */
 const ALL_TAG_STRINGS: readonly string[] = THINKING_TAG_VARIANTS.flatMap((variant) => [variant.open, variant.close]);
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 /**
  * One alternation over every tag, built once. `stripThinkingTags` used to run

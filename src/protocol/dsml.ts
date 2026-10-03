@@ -1,3 +1,5 @@
+import { escapeRegExp, MAX_STREAM_BUFFER_LENGTH } from "../util.js";
+
 export type DsmlParserEvent =
   | { type: "text"; text: string }
   | { type: "tool_start"; id: string; name: string }
@@ -11,7 +13,7 @@ const DSML_TOKENS = ["｜DSML｜", "|DSML|"] as const;
 const WRAPPER_STARTS = DSML_TOKENS.flatMap((token) => [`<${token}tool_calls>`, `<${token}function_calls>`]);
 const WRAPPER_ENDS = DSML_TOKENS.flatMap((token) => [`</${token}tool_calls>`, `</${token}function_calls>`]);
 
-export const MAX_DSML_BUFFER_LENGTH = 8 * 1024 * 1024;
+export const MAX_DSML_BUFFER_LENGTH = MAX_STREAM_BUFFER_LENGTH;
 
 /** Longest wrapper-end marker; bounds the tail that must be re-scanned. */
 const MAX_WRAPPER_END_LENGTH = Math.max(...WRAPPER_ENDS.map((end) => end.length));
@@ -325,10 +327,6 @@ function parseParameter(inner: string, position: number): (ParsedParameter & { p
     value: inner.slice(end + 1, closeAt),
     position: closeAt + close.length,
   };
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // Header patterns are precompiled once per marker token at module load.
