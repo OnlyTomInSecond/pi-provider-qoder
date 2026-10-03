@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { QODER_GATEWAY_COSY_VERSION } from "../cosy.js";
+import { LruMap } from "../lru.js";
 
 /**
  * Run-scoped request identity, mirroring the official qodercli (>=1.1.x)
@@ -47,10 +48,10 @@ interface QoderRunState {
   business: QoderRunBusiness;
 }
 
-/** Maximum number of in-flight runs remembered per process (evict oldest). */
+/** Maximum number of in-flight runs remembered per process (evict least-recently-used). */
 const MAX_RUN_STATES = 64;
 
-const runStates = new Map<string, QoderRunState>();
+const runStates = new LruMap<string, QoderRunState>(MAX_RUN_STATES);
 
 /** Empty the run registry. Exposed for tests only. */
 export function clearQoderRunRegistry(): void {
@@ -113,12 +114,6 @@ function advanceStage(business: QoderRunBusiness): void {
   else if (business.stage === "start") business.stage = "processing";
 }
 
-function evictOldestRunIfNeeded(): void {
-  if (runStates.size < MAX_RUN_STATES) return;
-  const oldestKey = runStates.keys().next().value;
-  if (oldestKey !== undefined) runStates.delete(oldestKey);
-}
-
 export interface QoderRunRequest {
   mode: string;
   model: string;
@@ -155,7 +150,6 @@ export function getQoderRunIdentity(input: QoderRunRequest): QoderRunIdentity {
       business: createBusiness(input.product, input.lastUserText),
     };
     runStates.set(key, state);
-    evictOldestRunIfNeeded();
   }
   advanceStage(state.business);
 
