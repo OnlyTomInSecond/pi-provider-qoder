@@ -5,7 +5,6 @@ import {
   createAssistantMessageEventStream,
   type Model,
   type SimpleStreamOptions,
-  type ThinkingContent,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { resolveQoderIdentity } from "../auth/oauth.js";
@@ -21,16 +20,11 @@ import { mergeQoderHeaders } from "./request.js";
 import { RequestAbortScope } from "./request-abort-scope.js";
 import { buildQoderChatRequest, isResumeAttempt, QODER_RESUME_ATTEMPT } from "./request-builder.js";
 import { buildContinuationContext, hasGeneratedContent, isResumableTimeout, relayContinuation } from "./resume.js";
-import { stripThinkingTags, ThinkingTagParser } from "./thinking.js";
+import { isThinkingRequested, ThinkingSink } from "./thinking-sink.js";
 import { ToolCallAccumulator } from "./tool-calls.js";
 import { parseQoderCreditsUsage, type QoderCreditsUsage } from "./usage.js";
 
 type QoderAssistantUsage = AssistantMessage["usage"] & QoderCreditsUsage;
-
-/** False only when the host explicitly disabled thinking for this request. */
-function isThinkingRequested(reasoning: unknown): boolean {
-  return reasoning !== false && reasoning !== "off";
-}
 
 const SSE_LINES_PER_YIELD = 32;
 type QoderStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
@@ -268,68 +262,32 @@ export function streamQoder(
       const decoder = new TextDecoder();
       let buffer = "";
 
-      let thinkingBlockIndex = -1;
       const toolCalls = new ToolCallAccumulator(output, pushEvent);
 
       // Qoder streams can carry <thinking> markup even without an explicit
       // reasoning request, so tag parsing is on unless the host disabled it.
       // Older pi builds passed `false`/`"off"` before reasoning became a typed
       // ThinkingLevel option; keep tolerating those legacy values.
-      const thinkingEnabled = isThinkingRequested(options?.reasoning);
-      const thinkingParser = new ThinkingTagParser(output, stream, pushEvent, { parseTags: thinkingEnabled });
+      const thinking = new ThinkingSink(output, stream, pushEvent, {
+        parseTags: isThinkingRequested(options?.reasoning),
+      });
       const dsmlParser = new DsmlToolCallParser();
-
-      const endApiThinking = (): void => {
-        if (thinkingBlockIndex === -1) return;
-        const block = output.content[thinkingBlockIndex] as ThinkingContent;
-        pushEvent({
-          type: "thinking_end",
-          contentIndex: thinkingBlockIndex,
-          content: block.thinking,
-          partial: output,
-        });
-        thinkingBlockIndex = -1;
-      };
-
-      const appendApiThinking = (chunk: string): void => {
-        // Qoder's backend sometimes routes a literal `<thinking>` opener into
-        // reasoning_content (with the matching `</thinking>` closer landing in
-        // the content stream). Strip tag artifacts so the thinking block stays
-        // clean, matching the SDK's ContentBlock model.
-        const cleaned = stripThinkingTags(chunk);
-        if (!cleaned) return;
-        if (thinkingBlockIndex === -1) {
-          thinkingParser.flushAtBoundary();
-          thinkingBlockIndex = output.content.length;
-          output.content.push({ type: "thinking", thinking: "" });
-          pushEvent({ type: "thinking_start", contentIndex: thinkingBlockIndex, partial: output });
-        }
-        const block = output.content[thinkingBlockIndex] as ThinkingContent;
-        block.thinking += cleaned;
-        pushEvent({
-          type: "thinking_delta",
-          contentIndex: thinkingBlockIndex,
-          delta: cleaned,
-          partial: output,
-        });
-      };
 
       // DSML tool markup can be leaked through EITHER the reasoning_content or
       // the content channel. Feed both through the one parser so a wrapper that
       // splits across the two channels still reassembles and ids stay unique,
       // tagging every emitted text event with the channel it arrived on:
-      // reasoning text lands in the API thinking block, content text in the
-      // regular text sink. Tool events are channel-agnostic and always become
-      // tool calls (never shown as tags).
+      // reasoning text lands in a thinking block, content text in the regular
+      // text sink. Tool events are channel-agnostic and always become tool
+      // calls (never shown as tags).
       const processDsmlEvent = (event: DsmlParserEvent, fromReasoning: boolean): void => {
         if (event.type === "text") {
-          if (fromReasoning) appendApiThinking(event.text);
-          else thinkingParser.processChunk(event.text);
+          if (fromReasoning) thinking.pushReasoning(event.text);
+          else thinking.pushContent(event.text);
           return;
         }
 
-        thinkingParser.flushAtBoundary();
-        endApiThinking();
+        thinking.boundary();
         if (event.type === "tool_start") {
           toolCalls.startDsmlCall(event.id, event.name);
           return;
@@ -474,9 +432,6 @@ export function streamQoder(
                 // 2. Process text content. DSML tool calls may be embedded in
                 // delta.content when the gateway fails to expose tool_calls.
                 if (delta.content) {
-                  // End API thinking block if active before switching to text or
-                  // a tool call embedded in the content stream.
-                  endApiThinking();
                   processDsmlChunk(delta.content, false);
                 }
                 // 3. Process native structured tool calls.
@@ -515,16 +470,7 @@ export function streamQoder(
       // Flush any text or DSML markup split across the final content delta.
       for (const event of dsmlParser.finalize()) processDsmlEvent(event, false);
 
-      thinkingParser.finalize();
-      if (thinkingBlockIndex !== -1) {
-        const block = output.content[thinkingBlockIndex] as ThinkingContent;
-        pushEvent({
-          type: "thinking_end",
-          contentIndex: thinkingBlockIndex,
-          content: block.thinking,
-          partial: output,
-        });
-      }
+      thinking.finalize();
 
       const hasToolCalls = toolCalls.finalize();
       if (hasToolCalls) {
