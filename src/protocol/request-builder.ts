@@ -37,11 +37,25 @@ function stableHash(prefix: string, ...inputs: string[]): string {
   return hash.digest("hex").slice(0, 16);
 }
 
-/** Resolve the bounded prompt-cache key, preserving it across an internal resume. */
-export function resolveSessionID(userID: string, qoderModel: string, options?: SimpleStreamOptions): string {
+/**
+ * Resolve the bounded prompt-cache key, preserving it across an internal resume.
+ *
+ * When the host supplies no `sessionId`, the fallback is derived from
+ * `fallbackSeed` (the conversation's system prompt + first user turn) instead
+ * of a fresh UUID: a per-request random id defeats both upstream prompt-cache
+ * affinity and the run coalescing in run-state.ts.
+ */
+export function resolveSessionID(
+  userID: string,
+  qoderModel: string,
+  options?: SimpleStreamOptions,
+  fallbackSeed = "",
+): string {
   const supplied = options?.sessionId;
   if (isResumeAttempt(options) && supplied) return supplied;
-  if (!supplied) return `${stableHash("qoder-session", userID, qoderModel)}-${crypto.randomUUID()}`;
+  if (!supplied) {
+    return `qoder-session-${stableHash("qoder-session", userID, qoderModel, fallbackSeed)}`;
+  }
 
   const readable = `qoder-session-${userID}-${qoderModel}-${supplied}`;
   return readable.length <= MAX_PROMPT_CACHE_KEY_LENGTH
@@ -169,8 +183,11 @@ export function buildQoderChatRequest(input: QoderChatRequestInput): QoderChatRe
 
   // Use a stable session id when pi provides one (per agent session) so the
   // Qoder server can maintain prompt cache affinity across consecutive
-  // requests. Qoder forwards session_id as prompt_cache_key upstream.
-  const sessionID = resolveSessionID(identity.userID, qoderModel, options);
+  // requests. Qoder forwards session_id as prompt_cache_key upstream. Without a
+  // host session id, derive one from the conversation's opening turns so
+  // consecutive tool rounds keep the same affinity and run identity.
+  const fallbackSeed = `${systemText}\0${contentToText(normalizedMessages[0]?.content ?? "")}`;
+  const sessionID = resolveSessionID(identity.userID, qoderModel, options, fallbackSeed);
 
   const currentTools = currentSystem?.toolsAdded ?? [];
   const toolsRaw = currentTools.length > 0 ? transformTools(currentTools) : undefined;
