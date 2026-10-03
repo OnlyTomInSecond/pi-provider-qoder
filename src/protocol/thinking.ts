@@ -121,19 +121,16 @@ export interface ThinkingTagParserOptions {
  * Text outside a tag streams out immediately as `text_*` events; text between
  * an opener and its closer is routed into a `thinking` block. Content blocks
  * are append-only so the `contentIndex` carried by every emitted event stays
- * valid — a later block is never spliced in front of an earlier one.
+ * valid — a later block is never spliced in front of an earlier one. Every
+ * text block is closed with a `text_end` before a thinking block or boundary
+ * takes over, matching the pi-ai event contract.
  */
 export class ThinkingTagParser {
   private buffer = "";
   private phase: Phase = "text";
   private activeEndTag: string = THINKING_TAG_VARIANTS[0].close;
-  // Set once at least one thinking block has been completed. Used only to end
-  // the current text block before a *later* thinking block starts, so the
-  // thinking block does not reuse that block's index.
-  private sawThinkingBlock = false;
   private thinkingBlockIndex: number | null = null;
   private textBlockIndex: number | null = null;
-  private lastTextBlockIndex: number | null = null;
   private readonly parseTags: boolean;
   private readonly emitEvent: (event: AssistantMessageEvent) => void;
 
@@ -145,10 +142,6 @@ export class ThinkingTagParser {
   ) {
     this.emitEvent = emitEvent ?? ((event) => stream.push(event));
     this.parseTags = options.parseTags ?? true;
-  }
-
-  getTextBlockIndex(): number | null {
-    return this.textBlockIndex ?? this.lastTextBlockIndex;
   }
 
   processChunk(chunk: string): void {
@@ -172,21 +165,23 @@ export class ThinkingTagParser {
     }
     if (this.buffer) this.emitText(this.buffer);
     this.buffer = "";
-    // Remember the text block so the next content starts a fresh block after
-    // whatever came out-of-band (an API thinking block or a tool call).
-    this.lastTextBlockIndex = this.textBlockIndex;
-    this.textBlockIndex = null;
+    // Close the text block so the next content starts a fresh block after
+    // whatever came out-of-band (a reasoning thinking block or a tool call).
+    this.closeText();
   }
 
   finalize(): void {
-    if (!this.buffer) return;
-    if (this.phase === "thinking" && this.thinkingBlockIndex !== null) {
-      this.emitThinking(this.buffer);
-      this.emitThinkingEnd();
-    } else {
-      this.emitText(this.buffer);
+    if (this.buffer) {
+      if (this.phase === "thinking" && this.thinkingBlockIndex !== null) {
+        this.emitThinking(this.buffer);
+        this.emitThinkingEnd();
+      } else {
+        this.emitText(this.buffer);
+      }
+      this.buffer = "";
     }
-    this.buffer = "";
+    // Close the trailing text block even when every delta was already emitted.
+    this.closeText();
   }
 
   /** Consume as much of `buffer` as the current phase allows. */
@@ -208,12 +203,9 @@ export class ThinkingTagParser {
           if (tag.index > 0) this.emitText(this.buffer.slice(0, tag.index));
           this.buffer = this.buffer.slice(tag.index + tag.variant.open.length);
           // Never insert a thinking block in front of text that has already
-          // emitted events: end text tracking so the thinking block gets its
-          // own fresh index.
-          if (this.sawThinkingBlock && this.textBlockIndex !== null) {
-            this.lastTextBlockIndex = this.textBlockIndex;
-            this.textBlockIndex = null;
-          }
+          // emitted events: close the text block so the thinking block and any
+          // later text get fresh, correctly ordered indices.
+          this.closeText();
           this.activeEndTag = tag.variant.close;
           this.phase = "thinking";
           continue;
@@ -272,9 +264,20 @@ export class ThinkingTagParser {
     }
     if (this.thinkingBlockIndex !== null) this.emitThinkingEnd();
     this.phase = "text";
-    this.sawThinkingBlock = true;
     this.thinkingBlockIndex = null;
-    this.lastTextBlockIndex = this.textBlockIndex;
+    this.closeText();
+  }
+
+  /** Emit `text_end` for the open text block and stop tracking it. */
+  private closeText(): void {
+    if (this.textBlockIndex === null) return;
+    const block = this.output.content[this.textBlockIndex] as TextContent;
+    this.emitEvent({
+      type: "text_end",
+      contentIndex: this.textBlockIndex,
+      content: block.text,
+      partial: this.output,
+    });
     this.textBlockIndex = null;
   }
 
