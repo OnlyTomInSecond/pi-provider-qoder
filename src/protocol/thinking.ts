@@ -213,15 +213,24 @@ export class ThinkingTagParser {
       if (this.phase === "text") {
         const tag = findEarliestTag(this.buffer);
 
-        // A real thinking block starts here: hand the preceding text over,
-        // then switch into thinking mode.
+        // A thinking block only starts here once its closer is present. A tag
+        // that looks like an opener but never closes — e.g. the model writing
+        // `<thinking>` while explaining these very tags in ordinary prose —
+        // must stay visible text instead of swallowing the rest of the answer.
         if (tag?.kind === "open") {
-          if (tag.index > 0) this.emitText(this.buffer.slice(0, tag.index));
-          this.buffer = this.buffer.slice(tag.index + tag.variant.open.length);
+          if (tag.index > 0) {
+            this.emitText(this.buffer.slice(0, tag.index));
+            this.buffer = this.buffer.slice(tag.index);
+          }
+          const rest = this.buffer.slice(tag.variant.open.length);
+          // Hold the opener (and everything after it) until a closer arrives;
+          // finalize() flushes an unclosed opener as text.
+          if (!findEarliestCloseTag(rest)) break;
           // Never insert a thinking block in front of text that has already
           // emitted events: close the text block so the thinking block and any
           // later text get fresh, correctly ordered indices.
           this.closeText();
+          this.buffer = rest;
           this.phase = "thinking";
           continue;
         }
