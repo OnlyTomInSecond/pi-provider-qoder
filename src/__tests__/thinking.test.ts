@@ -131,6 +131,41 @@ describe("ThinkingTagParser", () => {
     ]);
   });
 
+  // Upstream sometimes pairs an opener of one variant with a closer of another
+  // (e.g. <think>...</thinking>). Matching only the opener's own variant would
+  // never close the block and swallow the rest of the visible answer as
+  // thinking, so any close tag must terminate the thinking phase.
+  it.each([
+    ["<think>h</thinking>", "think opener, thinking closer"],
+    ["<thinking>h</think>", "thinking opener, think closer"],
+    ["<reasoning>h</summary>", "reasoning opener, summary closer"],
+    ["<thought>h</reasoning>", "thought opener, reasoning closer"],
+  ])("closes on a mismatched closer: %s (%s)", (tagged) => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk(`BEFORE ${tagged} AFTER`);
+    parser.finalize();
+
+    expect(output.content).toEqual([
+      { type: "text", text: "BEFORE " },
+      { type: "thinking", thinking: "h" },
+      { type: "text", text: " AFTER" },
+    ]);
+  });
+
+  it("closes on a mismatched closer split across chunks", () => {
+    const parser = new ThinkingTagParser(output, stream);
+    parser.processChunk("BEFORE <thin");
+    parser.processChunk("k>hidden</reason");
+    parser.processChunk("ing> AFTER");
+    parser.finalize();
+
+    expect(output.content).toEqual([
+      { type: "text", text: "BEFORE " },
+      { type: "thinking", thinking: "hidden" },
+      { type: "text", text: " AFTER" },
+    ]);
+  });
+
   // ── Chunked streaming ─────────────────────────────────────────────────
 
   it("handles thinking content split across multiple chunks", () => {

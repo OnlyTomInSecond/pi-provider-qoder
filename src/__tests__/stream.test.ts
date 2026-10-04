@@ -735,6 +735,24 @@ describe("streamQoder", () => {
     expect(done.message.content[thinkingDelta?.contentIndex ?? -1]?.type).toBe("thinking");
   });
 
+  it("does not swallow the answer when the thinking opener and closer variants differ", async () => {
+    // Upstream sometimes sends e.g. a <think> opener with a </thinking> closer.
+    // The trailing answer must stay visible instead of becoming thinking text.
+    for (const tagged of ["prefix <think>reason</thinking> answer", "prefix <thinking>reason</think> answer"]) {
+      globalThis.fetch = mockFetch(
+        sseEnvelope(chunk({ content: tagged })) + sseEnvelope(finishChunk("stop")) + DONE_SSE,
+      );
+      const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+      const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+
+      expect(done.message.content, tagged).toEqual([
+        { type: "text", text: "prefix " },
+        { type: "thinking", thinking: "reason" },
+        { type: "text", text: " answer" },
+      ]);
+    }
+  });
+
   it("recovers thinking after content when the upstream switches channels", async () => {
     const sse =
       sseEnvelope(chunk({ reasoning_content: "first thought" })) +
