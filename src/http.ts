@@ -1,22 +1,13 @@
+import { raceWithAbortSignal } from "@earendil-works/pi-ai/utils/abort";
 import { fetchWithRetry } from "./retry.js";
 
 export const QODER_REQUEST_TIMEOUT_MS = 15_000;
 
-/** Stop waiting even if an injected transport ignores cancellation. */
-export function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) {
-    void promise.catch(() => {});
-    return Promise.reject(signal.reason);
-  }
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(signal.reason);
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
-}
+/**
+ * Stop waiting even if an injected transport ignores cancellation. Delegates to
+ * pi's abort helper, which also normalizes a missing abort reason to an Error.
+ */
+export const withAbort = raceWithAbortSignal;
 
 /** Deadline covers headers AND body consumption, and aborts underlying fetch I/O. */
 export async function withRequestTimeout<T>(
