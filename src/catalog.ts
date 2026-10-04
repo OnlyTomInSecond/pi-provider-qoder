@@ -239,24 +239,45 @@ interface StaticModelRow {
   description?: string;
 }
 
-function buildStaticModels(mode: QoderMode, rows: readonly StaticModelRow[]): QoderModelDef[] {
-  const region = getQoderRegionConfig(mode);
-  const baseUrl = getQoderBaseUrl(mode);
-  return rows.map((row) => ({
-    id: toQoderModelId(row.name),
-    upstreamKey: row.upstreamKey,
-    name: row.name,
+/** Fields that vary between the static fallback and the live catalog. */
+interface ModelDefFields {
+  id: string;
+  name: string;
+  reasoning: boolean;
+  input: ("text" | "image")[];
+  contextWindow: number;
+  upstreamKey?: string;
+  supportsEffort: boolean;
+  thinkingLevelMap?: ThinkingLevelMap;
+  description?: string;
+  priceFactor?: number;
+}
+
+/** Build a model def, stamping the constants every Qoder model shares. */
+function makeModelDef(mode: QoderMode, fields: ModelDefFields): QoderModelDef {
+  return {
     api: "qoder-api",
-    provider: region.providerID,
-    baseUrl,
-    reasoning: row.reasoning,
-    supportsEffort: row.supportsEffort ?? false,
-    input: row.vision ? ["text", "image"] : ["text"],
+    provider: getQoderRegionConfig(mode).providerID,
+    baseUrl: getQoderBaseUrl(mode),
     cost: ZERO_COST,
-    contextWindow: row.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     maxTokens: MAX_OUTPUT_TOKENS,
-    ...(row.description ? { description: row.description } : {}),
-  }));
+    ...fields,
+  };
+}
+
+function buildStaticModels(mode: QoderMode, rows: readonly StaticModelRow[]): QoderModelDef[] {
+  return rows.map((row) =>
+    makeModelDef(mode, {
+      id: toQoderModelId(row.name),
+      upstreamKey: row.upstreamKey,
+      name: row.name,
+      reasoning: row.reasoning,
+      supportsEffort: row.supportsEffort ?? false,
+      input: row.vision ? ["text", "image"] : ["text"],
+      contextWindow: row.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      ...(row.description ? { description: row.description } : {}),
+    }),
+  );
 }
 
 export const staticModels: QoderModelDef[] = buildStaticModels("global", [
@@ -580,21 +601,18 @@ async function fetchAndCacheModelList(
 
       configs[modelInfo.id] = entry;
 
-      newModels.push({
-        id: modelInfo.id,
-        name: modelInfo.name,
-        api: "qoder-api",
-        provider: getQoderRegionConfig(mode).providerID,
-        baseUrl: getQoderBaseUrl(mode),
-        reasoning: isReasoning,
-        supportsEffort,
-        thinkingLevelMap,
-        input: isVL ? ["text", "image"] : ["text"],
-        cost: ZERO_COST,
-        contextWindow: ctxLen,
-        maxTokens: MAX_OUTPUT_TOKENS,
-        ...(priceFactor !== undefined ? { priceFactor } : {}),
-      });
+      newModels.push(
+        makeModelDef(mode, {
+          id: modelInfo.id,
+          name: modelInfo.name,
+          reasoning: isReasoning,
+          supportsEffort,
+          thinkingLevelMap,
+          input: isVL ? ["text", "image"] : ["text"],
+          contextWindow: ctxLen,
+          ...(priceFactor !== undefined ? { priceFactor } : {}),
+        }),
+      );
     }
 
     if (newModels.length === 0) return;
