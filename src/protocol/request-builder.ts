@@ -9,6 +9,7 @@ import {
   type TranscriptContext,
   withoutInitialSystemMessage,
 } from "@earendil-works/pi-ai";
+import type { QoderIdentity } from "../auth/oauth.js";
 import { MAX_OUTPUT_TOKENS, type QoderModelEntry } from "../catalog.js";
 import type { QoderMode } from "../region.js";
 import { getQoderRunIdentity } from "./run-state.js";
@@ -63,13 +64,6 @@ function resolveSessionID(
     : `qoder-session-${stableHash("qoder-session", userID, qoderModel, supplied)}`;
 }
 
-export interface QoderRequestIdentity {
-  userID: string;
-  name: string;
-  email: string;
-  machineID: string;
-}
-
 export interface QoderChatRequestInput {
   model: Model<Api>;
   context: TranscriptContext;
@@ -77,7 +71,7 @@ export interface QoderChatRequestInput {
   providerMode: QoderMode;
   /** Catalog/static config for `model.id`; `key` must be present. */
   modelConfig: QoderModelEntry;
-  identity: QoderRequestIdentity;
+  identity: QoderIdentity;
 }
 
 export interface QoderChatRequest {
