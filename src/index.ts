@@ -7,14 +7,7 @@ import {
   refreshQoderTokenForMode,
 } from "./auth/oauth.js";
 import { fetchQoderUsageForMode } from "./auth/usage.js";
-import {
-  getCachedModels,
-  isCacheStale,
-  staticCnModels,
-  staticModels,
-  updateQoderModelsCache,
-  withPriceFactorLabel,
-} from "./catalog.js";
+import { getCachedModels, isCacheStale, updateQoderModelsCache, withPriceFactorLabel } from "./catalog.js";
 import { debugLog } from "./debug.js";
 import { streamQoder } from "./protocol/stream.js";
 import { getQoderBaseUrl, getQoderRegionConfig, QODER_MODES, type QoderMode } from "./region.js";
@@ -45,15 +38,12 @@ async function registerQoderApi(): Promise<void> {
   }
 }
 
-function modelsForProvider(mode: QoderMode, providerID: string): QoderProviderModel[] {
-  const cached = getCachedModels(mode);
-  const modelsToUse = cached.length > 0 ? cached : mode === "cn" ? staticCnModels : staticModels;
-
-  return modelsToUse.map((m) => ({
-    ...m,
-    name: withPriceFactorLabel(m.name, m.priceFactor),
-    provider: providerID,
-    baseUrl: getQoderBaseUrl(mode),
+function modelsForProvider(mode: QoderMode): QoderProviderModel[] {
+  // getCachedModels already falls back to the static catalog and stamps
+  // provider/baseUrl; only the price-factor label is presentation-specific.
+  return getCachedModels(mode).map((model) => ({
+    ...model,
+    name: withPriceFactorLabel(model.name, model.priceFactor),
   }));
 }
 
@@ -78,7 +68,7 @@ function registerQoderProvider(pi: ExtensionAPI, mode: QoderMode): void {
   pi.registerProvider(providerID, {
     baseUrl: getQoderBaseUrl(mode),
     api: QODER_API,
-    models: modelsForProvider(mode, providerID),
+    models: modelsForProvider(mode),
     oauth: createQoderOAuth(mode),
     streamSimple: streamQoder,
   });
