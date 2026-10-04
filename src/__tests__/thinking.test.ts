@@ -166,6 +166,18 @@ describe("ThinkingTagParser", () => {
     ]);
   });
 
+  it("keeps tag literals in ordinary prose as visible text when unclosed", () => {
+    // Regression: the model explaining these very tags (e.g. "5 variants:
+    // `<think>`/`<reasoning>`/`<thought>`/`<summary>`") used to be treated as a
+    // thinking opener with no closer, swallowing the rest of the answer.
+    const parser = new ThinkingTagParser(output, stream);
+    const prose = "标签变体（`<think>`/`<reasoning>`/`<thought>`/`<summary>`）都有测试覆盖。";
+    parser.processChunk(prose);
+    parser.finalize();
+
+    expect(output.content).toEqual([{ type: "text", text: prose }]);
+  });
+
   // ── Chunked streaming ─────────────────────────────────────────────────
 
   it("handles thinking content split across multiple chunks", () => {
@@ -318,16 +330,17 @@ describe("ThinkingTagParser", () => {
     expect(output.content[thinkingDelta?.contentIndex ?? -1]?.type).toBe("thinking");
   });
 
-  it("finalize flushes remaining thinking when in thinking mode", () => {
+  it("flushes an unclosed opener as text at finalize", () => {
+    // A tag with no closer is ambiguous; it must stay visible text rather than
+    // hiding a possibly-long answer inside a thinking block.
     const parser = new ThinkingTagParser(output, stream);
     parser.processChunk("<thinking>unfinished");
     parser.finalize();
 
-    expect(output.content).toHaveLength(1);
-    expect(output.content[0]).toMatchObject({ type: "thinking", thinking: "unfinished" });
+    expect(output.content).toEqual([{ type: "text", text: "<thinking>unfinished" }]);
   });
 
-  it("flushes pending thinking at a tool boundary without ending the parser", () => {
+  it("flushes an unclosed opener as text at a tool boundary without ending the parser", () => {
     const parser = new ThinkingTagParser(output, stream);
     parser.processChunk("<thinking>reason<");
     parser.flushAtBoundary();
@@ -335,11 +348,11 @@ describe("ThinkingTagParser", () => {
     parser.finalize();
 
     expect(output.content).toEqual([
-      { type: "thinking", thinking: "reason<" },
+      { type: "text", text: "<thinking>reason<" },
       { type: "text", text: "after" },
     ]);
     const eventTypes = pushMock.mock.calls.map((call) => call[0].type);
-    expect(eventTypes.indexOf("thinking_end")).toBeLessThan(eventTypes.indexOf("text_start"));
+    expect(eventTypes).not.toContain("thinking_start");
   });
 
   // ── Orphan closing tags (opener arrived via reasoning_content) ─────────

@@ -1061,7 +1061,9 @@ describe("streamQoder", () => {
     expect(done.message.stopReason).toBe("toolUse");
   });
 
-  it("flushes content thinking before a DSML tool call", async () => {
+  it("keeps unclosed content markup as text before a DSML tool call", async () => {
+    // An opener without a closer is ambiguous, so it stays visible text rather
+    // than hiding the segment as reasoning.
     const dsml =
       `<｜DSML｜tool_calls>\n<｜DSML｜invoke name="bash">\n` +
       `<｜DSML｜parameter name="command" string="true">ls</｜DSML｜parameter>\n` +
@@ -1077,7 +1079,7 @@ describe("streamQoder", () => {
     const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
 
     expect(done.message.content).toEqual([
-      { type: "thinking", thinking: "reason<" },
+      { type: "text", text: "<thinking>reason<" },
       { type: "toolCall", id: "dsml_call_0", name: "bash", arguments: { command: "ls" } },
     ]);
   });
