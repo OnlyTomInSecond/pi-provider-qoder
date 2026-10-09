@@ -15,6 +15,9 @@
 /** Fallback lifetime when a response carries neither `expires_at` nor `expires_in`. */
 export const DEFAULT_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** Refresh margin: treat a token as expired this long before its reported expiry. */
+export const TOKEN_EXPIRY_SAFETY_MS = 5 * 60 * 1000;
+
 /** Parse an absolute expiry (`expires_at`) into epoch ms, or undefined. */
 export function parseExpiresAt(expiresAt: unknown): number | undefined {
   if (typeof expiresAt === "number") {
