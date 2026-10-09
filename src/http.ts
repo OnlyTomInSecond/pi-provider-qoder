@@ -1,7 +1,7 @@
 import { raceWithAbortSignal } from "@earendil-works/pi-ai/utils/abort";
 import { fetchWithRetry } from "./retry.js";
 
-export const QODER_REQUEST_TIMEOUT_MS = 15_000;
+const QODER_REQUEST_TIMEOUT_MS = 15_000;
 
 /**
  * Stop waiting even if an injected transport ignores cancellation. Delegates to

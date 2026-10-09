@@ -66,7 +66,7 @@ export function getContentText(msg: Message): string {
 }
 
 /** The image blocks of a message, in order. Empty when there are none. */
-export function getContentImages(msg: Message): ImageContent[] {
+function getContentImages(msg: Message): ImageContent[] {
   if (!Array.isArray(msg.content)) return [];
   return msg.content.filter((c): c is ImageContent => c.type === "image");
 }
