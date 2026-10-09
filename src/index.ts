@@ -100,6 +100,25 @@ async function refreshQoderModelsCache(mode: QoderMode, accessToken?: string): P
   );
 }
 
+/**
+ * Run `task` for both regions concurrently, isolating each region's failure so
+ * one bad region cannot block the other.
+ */
+async function runPerMode(
+  task: (mode: QoderMode) => Promise<void>,
+  onError: (mode: QoderMode, error: unknown) => void,
+): Promise<void> {
+  await Promise.all(
+    QODER_MODES.map(async (mode) => {
+      try {
+        await task(mode);
+      } catch (error) {
+        onError(mode, error);
+      }
+    }),
+  );
+}
+
 export default async function (pi: ExtensionAPI) {
   await registerQoderApi();
 
@@ -108,17 +127,17 @@ export default async function (pi: ExtensionAPI) {
   // of chaining their network round-trips sequentially. Each mode keeps its own
   // failure boundary so one bad region cannot block the other. They share
   // auth.json; the host credential store serializes updates under its lock.
-  await Promise.all(
-    QODER_MODES.map(async (mode) => {
+  await runPerMode(
+    async (mode) => {
       const providerID = getQoderRegionConfig(mode).providerID;
-      try {
-        await autoLoginQoderFromEnvironment(providerID, mode);
-        await refreshQoderModelsCache(mode);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[pi-provider-qoder] Automatic login failed for ${providerID}: ${message}`);
-      }
-    }),
+      await autoLoginQoderFromEnvironment(providerID, mode);
+      await refreshQoderModelsCache(mode);
+    },
+    (mode, error) => {
+      const providerID = getQoderRegionConfig(mode).providerID;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[pi-provider-qoder] Automatic login failed for ${providerID}: ${message}`);
+    },
   );
 
   // Refresh once per session at startup if the cache is missing or stale,
@@ -127,18 +146,15 @@ export default async function (pi: ExtensionAPI) {
     // The two regions are independent (own token, cache file, base URL), so
     // refresh them concurrently instead of letting a slow catalog fetch for one
     // delay the other.
-    await Promise.all(
-      QODER_MODES.map(async (mode) => {
-        try {
-          const providerID = getQoderRegionConfig(mode).providerID;
-          const accessToken = await ctx.modelRegistry.getApiKeyForProvider(providerID);
-          if (!accessToken) return;
-          await refreshQoderModelsCache(mode, accessToken);
-        } catch (error) {
-          // Best-effort: fall back to the existing cache / static models.
-          debugLog(`session_start model catalog refresh failed for ${mode}`, error);
-        }
-      }),
+    await runPerMode(
+      async (mode) => {
+        const providerID = getQoderRegionConfig(mode).providerID;
+        const accessToken = await ctx.modelRegistry.getApiKeyForProvider(providerID);
+        if (!accessToken) return;
+        await refreshQoderModelsCache(mode, accessToken);
+      },
+      // Best-effort: fall back to the existing cache / static models.
+      (mode, error) => debugLog(`session_start model catalog refresh failed for ${mode}`, error),
     );
   });
 
