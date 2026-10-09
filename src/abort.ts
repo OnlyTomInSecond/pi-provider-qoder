@@ -1,7 +1,8 @@
 import { combineAbortSignals } from "@earendil-works/pi-ai/utils/abort-signals";
 
 /**
- * Request-scoped cancellation and deadlines, shared by the streamed chat path.
+ * Request-scoped cancellation and deadlines, shared by the streamed chat path
+ * and the JSON request helper.
  *
  * Combines three independent abort sources — the host's external
  * `AbortSignal`, an overall request deadline, and an idle timeout that resets
