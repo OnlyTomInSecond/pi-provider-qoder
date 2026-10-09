@@ -5,7 +5,7 @@ import { debugLog } from "../debug.js";
 import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
 import { LruMap } from "../lru.js";
 import { getQoderRefreshURL, getQoderRegionConfig, type QoderMode } from "../region.js";
-import { DEFAULT_TOKEN_TTL_MS, resolveTokenExpiry } from "./expiry.js";
+import { DEFAULT_TOKEN_TTL_MS, resolveTokenExpiry, TOKEN_EXPIRY_SAFETY_MS } from "./expiry.js";
 import { interactiveLogin } from "./login.js";
 import { credentialsFromPat, fetchUserInfo } from "./pat.js";
 import { decodeRefresh, encodeDeviceRefresh } from "./refresh.js";
@@ -255,7 +255,7 @@ export async function refreshQoderTokenForMode(
       ...credentials,
       refresh: encodeDeviceRefresh(data.refresh_token || stored.refreshToken, userID, machineID),
       access: data.token,
-      expires: resolveTokenExpiry(data, DEFAULT_TOKEN_TTL_MS) - 5 * 60 * 1000,
+      expires: resolveTokenExpiry(data, DEFAULT_TOKEN_TTL_MS) - TOKEN_EXPIRY_SAFETY_MS,
       userID,
       email: previous.email || "",
       name: previous.name || "",

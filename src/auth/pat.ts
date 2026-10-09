@@ -3,7 +3,7 @@ import { buildOpenApiHeaders, getMachineId } from "../cosy.js";
 import { debugLog } from "../debug.js";
 import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
 import { getQoderExchangeURL, getQoderRegionConfig, getQoderUserInfoURL, type QoderMode } from "../region.js";
-import { resolveTokenExpiry } from "./expiry.js";
+import { resolveTokenExpiry, TOKEN_EXPIRY_SAFETY_MS } from "./expiry.js";
 
 /**
  * Marker prefix used in the credential `refresh` field to identify PAT-based
@@ -133,7 +133,7 @@ export async function credentialsFromPat(
   return {
     refresh: encodePatRefresh(pat, jobRefreshToken, userID, machineID),
     access: jobToken,
-    expires: expiresAt - 5 * 60 * 1000, // 5 min buffer
+    expires: expiresAt - TOKEN_EXPIRY_SAFETY_MS,
     userID,
     email: email || region.userEmailFallback,
     name: name || region.userNameFallback,
