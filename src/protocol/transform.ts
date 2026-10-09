@@ -71,6 +71,11 @@ function getContentImages(msg: Message): ImageContent[] {
   return msg.content.filter((c): c is ImageContent => c.type === "image");
 }
 
+/** Inline an image block as an OpenAI-style `image_url` data URI part. */
+function toImagePart(img: ImageContent): QoderImagePart {
+  return { type: "image_url", image_url: { url: `data:${img.mimeType};base64,${img.data}` } };
+}
+
 export function transformTools(tools: Tool[]): QoderTool[] {
   return tools.map((t) => ({
     type: "function",
@@ -176,13 +181,7 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
                 return { type: "text", text: (c as TextContent).text };
               }
               if (c.type === "image") {
-                const img = c as ImageContent;
-                return {
-                  type: "image_url",
-                  image_url: {
-                    url: `data:${img.mimeType};base64,${img.data}`,
-                  },
-                };
+                return toImagePart(c as ImageContent);
               }
               return null;
             })
@@ -279,12 +278,7 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
               type: "text",
               text: `[${images.length} image${images.length === 1 ? "" : "s"} returned by the previous tool call]`,
             },
-            ...images.map(
-              (img): QoderImagePart => ({
-                type: "image_url",
-                image_url: { url: `data:${img.mimeType};base64,${img.data}` },
-              }),
-            ),
+            ...images.map(toImagePart),
           ],
         });
       }
