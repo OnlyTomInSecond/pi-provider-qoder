@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RequestAbortScope } from "../protocol/request-abort-scope.js";
+import { RequestAbortScope } from "../abort.js";
 
 describe("RequestAbortScope", () => {
   beforeEach(() => {

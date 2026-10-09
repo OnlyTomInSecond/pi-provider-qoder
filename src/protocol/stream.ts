@@ -8,6 +8,7 @@ import {
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { providerHeadersToRecord } from "@earendil-works/pi-ai/utils/headers";
+import { RequestAbortScope } from "../abort.js";
 import { resolveQoderIdentity } from "../auth/oauth.js";
 import { getCachedModelConfig } from "../catalog.js";
 import { buildAuthHeaders, getMachineId } from "../cosy.js";
@@ -18,7 +19,6 @@ import { yieldToEventLoop } from "../yield.js";
 import { DELTA_FLUSH_INTERVAL_MS, DeltaCoalescer } from "./delta-coalescer.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
 import { qoderEncodeBodyAsync } from "./encoding.js";
-import { RequestAbortScope } from "./request-abort-scope.js";
 import { buildQoderChatRequest, isResumeAttempt, QODER_RESUME_ATTEMPT } from "./request-builder.js";
 import { buildContinuationContext, hasGeneratedContent, isResumableTimeout, relayContinuation } from "./resume.js";
 import { decodeQoderSseData } from "./sse.js";
