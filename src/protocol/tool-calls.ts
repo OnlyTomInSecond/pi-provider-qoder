@@ -2,7 +2,7 @@ import type { AssistantMessage, AssistantMessageEventStream, JsonObject, ToolCal
 
 export type ToolCallStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
 
-type ToolCallDelta = {
+export type ToolCallDelta = {
   index?: number;
   id?: string;
   function?: {
