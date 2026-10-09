@@ -4,7 +4,7 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-a
 import { getMachineId, QODER_USER_AGENT } from "../cosy.js";
 import { QoderHttpError, withAbort, withRequestTimeout } from "../http.js";
 import { getQoderDeviceLoginURL, getQoderDevicePollURL, getQoderRegionConfig, type QoderMode } from "../region.js";
-import { resolveTokenExpiry } from "./expiry.js";
+import { resolveTokenExpiry, TOKEN_EXPIRY_SAFETY_MS } from "./expiry.js";
 import { credentialsFromPat, fetchUserInfo } from "./pat.js";
 import { encodeDeviceRefresh } from "./refresh.js";
 
@@ -85,7 +85,7 @@ async function runDeviceFlow(callbacks: OAuthLoginCallbacks, signal: AbortSignal
     return {
       refresh: encodeDeviceRefresh(token.refresh_token, token.user_id, machineID),
       access: token.token,
-      expires: resolveTokenExpiry(token) - 5 * 60 * 1000,
+      expires: resolveTokenExpiry(token) - TOKEN_EXPIRY_SAFETY_MS,
       userID: token.user_id,
       email: info.email,
       name: info.name,
