@@ -23,9 +23,7 @@ import { buildQoderChatRequest, isResumeAttempt, QODER_RESUME_ATTEMPT } from "./
 import { buildContinuationContext, hasGeneratedContent, isResumableTimeout, relayContinuation } from "./resume.js";
 import { isThinkingRequested, ThinkingSink } from "./thinking-sink.js";
 import { ToolCallAccumulator } from "./tool-calls.js";
-import { parseQoderCreditsUsage, type QoderCreditsUsage } from "./usage.js";
-
-type QoderAssistantUsage = AssistantMessage["usage"] & QoderCreditsUsage;
+import { applyQoderUsage } from "./usage.js";
 
 const SSE_LINES_PER_YIELD = 32;
 type QoderStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
@@ -390,42 +388,7 @@ export function streamQoder(
             if (inner.id) output.responseId = inner.id as string;
             if (inner.model) output.responseModel = inner.model as string;
             if (inner.usage) {
-              const u = inner.usage as {
-                prompt_tokens?: number;
-                completion_tokens?: number;
-                total_tokens?: number;
-                completion_tokens_details?: { reasoning_tokens?: number };
-                prompt_tokens_details?: {
-                  cacheable_tokens?: number;
-                  cached_tokens?: number;
-                  cache_write_tokens?: number;
-                };
-              };
-              // pi-core computes `promptTokens = input + cacheRead + cacheWrite`
-              // (Anthropic convention: `input` EXCLUDES cached/written tokens).
-              // Qoder follows OpenAI semantics where `prompt_tokens` INCLUDES
-              // `cached_tokens`, so subtract cacheRead (and cache_write_tokens
-              // when reported) to match the contract pi-ai's own OpenAI
-              // provider uses. `cacheable_tokens` is a capacity metric, not a
-              // write count (it is 0 even on first-turn writes), so it is NOT
-              // mapped to cacheWrite.
-              const promptTokens = u.prompt_tokens ?? 0;
-              const cacheReadTokens = u.prompt_tokens_details?.cached_tokens ?? 0;
-              const cacheWriteTokens = u.prompt_tokens_details?.cache_write_tokens ?? 0;
-              output.usage.input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
-              output.usage.output = u.completion_tokens ?? 0;
-              output.usage.totalTokens = u.total_tokens ?? promptTokens + output.usage.output;
-              output.usage.cacheRead = cacheReadTokens;
-              output.usage.cacheWrite = cacheWriteTokens;
-              if (typeof u.completion_tokens_details?.reasoning_tokens === "number") {
-                output.usage.reasoning = u.completion_tokens_details.reasoning_tokens;
-              }
-
-              // Qoder Credits are not USD and pi-ai 0.80 has no native Credits
-              // field. Preserve the official optional names on the runtime
-              // usage object so hosts can read them without corrupting
-              // usage.cost. Missing fields remain absent, not zero.
-              Object.assign(output.usage as QoderAssistantUsage, parseQoderCreditsUsage(inner.usage));
+              applyQoderUsage(output.usage, inner.usage);
             }
             if (inner.choices && inner.choices.length > 0) {
               const choice = inner.choices[0];
