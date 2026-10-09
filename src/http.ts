@@ -1,4 +1,5 @@
 import { raceWithAbortSignal } from "@earendil-works/pi-ai/utils/abort";
+import { RequestAbortScope } from "./abort.js";
 import { fetchWithRetry } from "./retry.js";
 
 const QODER_REQUEST_TIMEOUT_MS = 15_000;
@@ -16,15 +17,11 @@ export async function withRequestTimeout<T>(
   timeoutMs = QODER_REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   signal?.throwIfAborted();
-  const controller = new AbortController();
-  const abort = () => controller.abort(signal?.reason);
-  signal?.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(() => controller.abort(new Error("Qoder request timeout")), timeoutMs);
+  const scope = new RequestAbortScope({ externalSignal: signal, timeoutMs });
   try {
-    return await withAbort(operation(controller.signal), controller.signal);
+    return await withAbort(operation(scope.signal), scope.signal);
   } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abort);
+    scope.dispose();
   }
 }
 
