@@ -21,6 +21,7 @@ import { qoderEncodeBodyAsync } from "./encoding.js";
 import { RequestAbortScope } from "./request-abort-scope.js";
 import { buildQoderChatRequest, isResumeAttempt, QODER_RESUME_ATTEMPT } from "./request-builder.js";
 import { buildContinuationContext, hasGeneratedContent, isResumableTimeout, relayContinuation } from "./resume.js";
+import { decodeQoderSseData } from "./sse.js";
 import { isThinkingRequested, ThinkingSink } from "./thinking-sink.js";
 import { ToolCallAccumulator } from "./tool-calls.js";
 import { applyQoderUsage } from "./usage.js";
@@ -357,36 +358,18 @@ export function streamQoder(
 
           if (!line.startsWith("data:")) continue;
 
-          const dataStr = line.substring(5).trim();
-          if (dataStr === "[DONE]") {
-            sawDone = true;
-            break;
-          }
-
           try {
-            const envelope = JSON.parse(dataStr);
-            if (envelope.statusCodeValue && envelope.statusCodeValue !== 200) {
-              throw new Error(`Upstream status ${envelope.statusCodeValue}: ${envelope.body}`);
-            }
-
-            const innerStr = envelope.body;
-            // The gateway sends the sentinel wrapped in an envelope
-            // (`body: "[DONE]"`) as well as bare, and both mean the reply is
-            // over, so both have to end the read loop.
-            if (innerStr === "[DONE]") {
+            const decoded = decodeQoderSseData(line.substring(5).trim());
+            if (decoded.type === "done") {
               sawDone = true;
               break;
             }
-            if (!innerStr) continue;
+            if (decoded.type === "empty") continue;
 
-            const inner = JSON.parse(innerStr);
+            const inner = decoded.value;
             await notifyProviderStreamEvent(inner);
-            if (inner.error || (inner.code && inner.message && !inner.choices)) {
-              const error = inner.error ?? inner;
-              throw new Error(`Qoder upstream error: ${typeof error === "string" ? error : JSON.stringify(error)}`);
-            }
-            if (inner.id) output.responseId = inner.id as string;
-            if (inner.model) output.responseModel = inner.model as string;
+            if (inner.id) output.responseId = inner.id;
+            if (inner.model) output.responseModel = inner.model;
             if (inner.usage) {
               applyQoderUsage(output.usage, inner.usage);
             }
