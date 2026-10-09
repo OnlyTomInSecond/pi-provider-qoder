@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 /**
  * Lightweight retry for idempotent GET requests.
  *
@@ -30,21 +32,6 @@ export interface FetchRetryOptions {
   /** Abort signal forwarded to fetch. */
   signal?: AbortSignal;
   fetch?: typeof fetch;
-}
-
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("Aborted"));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(signal?.reason ?? new Error("Aborted"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 /**
