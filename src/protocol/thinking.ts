@@ -7,7 +7,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { escapeRegExp } from "../util.js";
 
-export const THINKING_TAG_VARIANTS: Array<{ open: string; close: string }> = [
+const THINKING_TAG_VARIANTS: Array<{ open: string; close: string }> = [
   { open: "<thinking>", close: "</thinking>" },
   { open: "<think>", close: "</think>" },
   { open: "<reasoning>", close: "</reasoning>" },

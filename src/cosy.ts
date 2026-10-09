@@ -14,8 +14,8 @@ XcW+ML9FoCI6AOvOzwIDAQAB
 // Keep the COSY client identity aligned with the current Qoder CLI catalog
 // protocol. Older values cause the model endpoint to return a reduced list.
 export const QODER_GATEWAY_COSY_VERSION = "1.1.38";
-export const QODER_OPENAPI_COSY_VERSION = "1.0.1";
-export const QODER_CLIENT_TYPE = "5";
+const QODER_OPENAPI_COSY_VERSION = "1.0.1";
+const QODER_CLIENT_TYPE = "5";
 export const QODER_USER_AGENT = "pi-provider-qoder";
 
 /**
