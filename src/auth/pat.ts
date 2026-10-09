@@ -4,12 +4,7 @@ import { debugLog } from "../debug.js";
 import { fetchQoderJson, type QoderRequestOptions } from "../http.js";
 import { getQoderExchangeURL, getQoderRegionConfig, getQoderUserInfoURL, type QoderMode } from "../region.js";
 import { resolveTokenExpiry, TOKEN_EXPIRY_SAFETY_MS } from "./expiry.js";
-
-/**
- * Marker prefix used in the credential `refresh` field to identify PAT-based
- * credentials. Layout: `pat|<personalToken>|<jobRefreshToken>|<userID>|<machineID>`
- */
-export const PAT_REFRESH_PREFIX = "pat";
+import { encodePatRefresh } from "./refresh.js";
 
 export interface PatExchangeResult {
   /** Short-lived job token (jt-...) used for auth + COSY signatures. */
@@ -17,31 +12,6 @@ export interface PatExchangeResult {
   /** Job refresh token (jrt-...), if returned. */
   jobRefreshToken: string;
   expiresAt: number;
-}
-
-export function isPatRefresh(refresh: string): boolean {
-  return refresh.startsWith(`${PAT_REFRESH_PREFIX}|`);
-}
-
-/** Encode a PAT credential's refresh field. */
-export function encodePatRefresh(pat: string, jobRefreshToken: string, userID: string, machineID: string): string {
-  return [PAT_REFRESH_PREFIX, pat, jobRefreshToken, userID, machineID].join("|");
-}
-
-/** Decode a PAT credential's refresh field. */
-export function decodePatRefresh(refresh: string): {
-  pat: string;
-  jobRefreshToken: string;
-  userID: string;
-  machineID: string;
-} {
-  const parts = refresh.split("|");
-  return {
-    pat: parts[1] || "",
-    jobRefreshToken: parts[2] || "",
-    userID: parts[3] || "",
-    machineID: parts[4] || "",
-  };
 }
 
 /**
