@@ -32,7 +32,7 @@ Inside pi:
 - **Effort-aware thinking** — pi's thinking levels are mapped onto each model's `enable_thinking` / `reasoning_effort` support.
 - **Agentic tool use** — native tool calls, plus DSML markup embedded in the text stream, parsed into clean `toolCall` blocks.
 - **Robust streaming** — handles Qoder's double-`[DONE]` SSE envelope, hidden `<thinking>` markup, idle timeouts with one transparent continuation from the partial assistant output, and orphaned/compacted tool history.
-- **Usage reporting** — `/login` panels and session usage show Credits quota (user quota + org resource package).
+- **Usage reporting (host-dependent)** — exposes a `fetchUsage` OAuth hook that reads Qoder's Credits quota (user quota + org resource package). Hosts that consume the hook (OMP-style) can surface it; stock pi has no usage hook, so nothing extra is shown there.
 - **WAF bypass / COSY signatures** — every request is signed with the same RSA/AES machine-bound headers Qoder expects.
 
 ## Providers
@@ -126,11 +126,16 @@ Chat POST requests are not automatically retried, even when `maxRetries` is supp
 
 ## Usage reporting
 
-The usage hook hits `GET /api/v2/quota/usage` and surfaces:
+The provider attaches a `fetchUsage` hook to its OAuth config. It hits
+`GET /api/v2/quota/usage` and returns:
 
 - **User Quota** — used / total / remaining in Qoder Credits and the reset time.
 - **Org Resource Package** — same shape, shown when present.
 - A link to the account page to buy more Credits.
+
+This hook is host-dependent: stock pi does not read it (no `fetchUsage`
+reference exists in pi-coding-agent 0.75.5 through 1.2.0), so pi shows no Qoder
+quota. Only hosts that opt into a usage hook (OMP-style) display it.
 
 ## Development
 
