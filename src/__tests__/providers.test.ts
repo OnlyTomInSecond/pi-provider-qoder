@@ -167,4 +167,34 @@ describe("qoder-api registry", () => {
     expect(typeof providers.get("qoder")?.streamSimple).toBe("function");
     expect(typeof providers.get("qoder-cn")?.streamSimple).toBe("function");
   });
+
+  it("still registers providers when @earendil-works/pi-ai/compat is gone", async () => {
+    for (const name of patEnvNames) delete process.env[name];
+
+    // pi documents the compat entrypoint as temporary. If it is removed, the
+    // dynamic import rejects; loading must still succeed via
+    // registerProvider(streamSimple).
+    vi.doMock("@earendil-works/pi-ai/compat", () => {
+      throw new Error("Cannot find module '@earendil-works/pi-ai/compat'");
+    });
+
+    const { default: registerProviders } = await import("../index.js");
+
+    const providers = new Map<string, Record<string, unknown>>();
+    const registerProvider = vi.fn((providerID: string, config: Record<string, unknown>) => {
+      providers.set(providerID, config);
+    });
+    const pi = {
+      registerProvider,
+      on: vi.fn(),
+    };
+
+    await expect(registerProviders(pi as never)).resolves.toBeUndefined();
+
+    expect(registerProvider).toHaveBeenCalledTimes(2);
+    expect(providers.has("qoder")).toBe(true);
+    expect(providers.has("qoder-cn")).toBe(true);
+    expect(typeof providers.get("qoder")?.streamSimple).toBe("function");
+    expect(typeof providers.get("qoder-cn")?.streamSimple).toBe("function");
+  });
 });
