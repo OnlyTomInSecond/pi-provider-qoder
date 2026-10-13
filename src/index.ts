@@ -154,6 +154,10 @@ export default async function (pi: ExtensionAPI) {
     await runPerMode(
       async (mode) => {
         const providerID = getQoderRegionConfig(mode).providerID;
+        // getApiKeyForProvider resolves OAuth getApiKey() to the access token on
+        // the ModelRegistry compatibility facade. It stays the most portable
+        // choice: it exists in pi 0.75.5+ (older peer hosts included), whereas
+        // the newer getProviderAuth() is absent there and offers no extra value.
         const accessToken = await ctx.modelRegistry.getApiKeyForProvider(providerID);
         if (!accessToken) return;
         await refreshQoderModelsCache(mode, accessToken);
