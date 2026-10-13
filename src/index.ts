@@ -29,13 +29,16 @@ async function registerQoderApi(): Promise<void> {
   try {
     const compat = await import("@earendil-works/pi-ai/compat");
     const register = (compat as Record<string, unknown>).registerApiProvider;
-    if (typeof register !== "function") return; // OMP / hosts without the export
+    // OMP-style hosts ship a compat module without the api registry.
+    if (typeof register !== "function") return;
     (register as (config: unknown, source: string) => void)(
       { api: QODER_API, stream: streamQoder, streamSimple: streamQoder },
       "provider:qoder",
     );
   } catch (error) {
-    // Host has no compat registry; registerProvider(streamSimple) is enough.
+    // The module may be missing entirely if pi drops the temporary compat
+    // entrypoint; registerProvider(streamSimple) below is enough on its own, so
+    // loading must not fail. Log so the degradation is diagnosable.
     debugLog("pi-ai/compat registerApiProvider unavailable", error);
   }
 }
