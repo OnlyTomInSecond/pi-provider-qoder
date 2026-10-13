@@ -12,9 +12,11 @@ import { debugLog } from "./debug.js";
 import { streamQoder } from "./protocol/stream.js";
 import { getQoderBaseUrl, getQoderRegionConfig, QODER_MODES, type QoderMode } from "./region.js";
 
-// pi reads a `fetchUsage` hook off the oauth config at runtime, but it is not
-// part of the published ProviderConfig type. Extend it locally so the hook is
-// typed instead of smuggled through an `as unknown` cast.
+// Some hosts read a `fetchUsage` hook off the oauth config at runtime. It is
+// not part of pi's published ProviderConfig type, and stock pi never reads it:
+// no `fetchUsage` reference exists in pi-coding-agent 0.75.5 through 1.2.0. The
+// hook is only meaningful to hosts that opt in (OMP-style), so extending the
+// type locally keeps it typed instead of smuggled through an `as unknown` cast.
 type QoderOAuth = NonNullable<ProviderConfig["oauth"]> & {
   fetchUsage: (credentials: OAuthCredentials) => Promise<unknown>;
 };
