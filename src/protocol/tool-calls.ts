@@ -1,6 +1,37 @@
 import type { AssistantMessage, AssistantMessageEventStream, JsonObject, ToolCall } from "@earendil-works/pi-ai";
+import * as piAi from "@earendil-works/pi-ai";
 
 export type ToolCallStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
+
+/**
+ * A finished tool call's parsed arguments, plus pi's post-1.2.0 diagnostic.
+ * `argumentsError` is set (with empty `arguments`) when the model's complete
+ * arguments text was not a JSON object, so pi's `validateToolArguments` can
+ * report the raw text back to the model instead of running a partial call.
+ */
+export type FinishedToolCallArguments = { arguments: JsonObject; argumentsError?: string };
+
+/**
+ * `argumentsError` and `parseToolCallArguments()` were added to pi-ai after
+ * 1.2.0 (#10897). Probe the package entrypoint instead of importing it by name:
+ * a named import of an export missing from a published 1.2.0 host throws at
+ * module link time, while a namespace property read is simply `undefined`.
+ *
+ * When the host cannot carry the diagnostic, a finished call with `{}` would be
+ * silently executed (only schema-required fields would fail), so the fallback
+ * keeps failing the stream instead.
+ */
+function resolveHostParseFinishedArguments(): ((value: string) => FinishedToolCallArguments) | undefined {
+  const candidate = (piAi as Record<string, unknown>).parseToolCallArguments;
+  if (typeof candidate !== "function") return undefined;
+  const parse = candidate as (json: string | undefined) => FinishedToolCallArguments;
+  return (value) => parse(value);
+}
+
+/** Strict parse used when the host predates `argumentsError`; throws on bad text. */
+function parseFinishedArgumentsStrictly(value: string): FinishedToolCallArguments {
+  return { arguments: parseArguments(value) };
+}
 
 export type ToolCallDelta = {
   index?: number;
@@ -33,6 +64,8 @@ export class ToolCallAccumulator {
   constructor(
     private readonly output: AssistantMessage,
     private readonly emitEvent: (event: ToolCallStreamEvent) => void,
+    /** Overridable for tests; defaults to the host's pi `parseToolCallArguments` when present. */
+    private readonly parseFinished: (value: string) => FinishedToolCallArguments = defaultParseFinishedArguments,
   ) {}
 
   processNativeDelta(delta: ToolCallDelta): void {
@@ -72,27 +105,30 @@ export class ToolCallAccumulator {
 
   finalize(): boolean {
     // Validate the entire batch before exposing any completed executable call.
-    const parsed = new Map<ToolCallState, JsonObject>();
+    const parsed = new Map<ToolCallState, FinishedToolCallArguments>();
     for (const state of this.ordered) {
       if (!state.emittedStart && !state.arguments) continue;
       if (!state.id || !state.name) throw new Error("Incomplete Qoder tool call identity");
-      parsed.set(state, parseArguments(state.arguments));
+      parsed.set(state, this.parseFinished(state.arguments));
     }
     for (const state of this.ordered) {
       if (!state.emittedStart || state.emittedEnd) continue;
       state.emittedEnd = true;
-      const args = parsed.get(state) ?? {};
-      const block = this.output.content[state.contentIndex] as ToolCall;
-      block.arguments = args;
+      const finished = parsed.get(state) ?? { arguments: {} };
+      const block = this.output.content[state.contentIndex] as ToolCallWithArgumentsError;
+      block.arguments = finished.arguments;
+      if (finished.argumentsError) block.argumentsError = finished.argumentsError;
+      const toolCall: ToolCallWithArgumentsError = {
+        type: "toolCall",
+        id: state.id,
+        name: state.name,
+        arguments: finished.arguments,
+      };
+      if (finished.argumentsError) toolCall.argumentsError = finished.argumentsError;
       this.emitEvent({
         type: "toolcall_end",
         contentIndex: state.contentIndex,
-        toolCall: {
-          type: "toolCall",
-          id: state.id,
-          name: state.name,
-          arguments: args,
-        },
+        toolCall,
         partial: this.output,
       });
     }
@@ -147,6 +183,16 @@ export class ToolCallAccumulator {
     });
   }
 }
+
+/**
+ * Local view of pi's ToolCall that also carries the post-1.2.0 `argumentsError`
+ * field. The published 1.2.0 types do not declare it yet, and it is optional,
+ * so widening here keeps the extension compiling against either host while
+ * still emitting the field for hosts that understand it.
+ */
+type ToolCallWithArgumentsError = ToolCall & { argumentsError?: string };
+
+const defaultParseFinishedArguments = resolveHostParseFinishedArguments() ?? parseFinishedArgumentsStrictly;
 
 function parseArguments(value: string): JsonObject {
   try {
