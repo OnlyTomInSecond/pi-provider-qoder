@@ -326,17 +326,38 @@ describe("streamQoder", () => {
     });
   });
 
-  it.each(["tool_calls", "length"])("never executes truncated tool arguments on %s", async (reason) => {
+  it("never executes a length-truncated tool call", async () => {
     globalThis.fetch = mockFetch(
       sseEnvelope(
         chunk({ tool_calls: [{ index: 0, id: "call", function: { name: "bash", arguments: '{"command":' } }] }),
       ) +
-        sseEnvelope(finishChunk(reason)) +
+        sseEnvelope(finishChunk("length")) +
         DONE_SSE,
     );
     const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
-    expect(events.at(-1)?.type).toBe("error");
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: { errorMessage: "Qoder tool call was truncated by the output token limit" },
+    });
     expect(events.some((event) => event.type === "toolcall_end")).toBe(false);
+  });
+
+  it("reports unparseable tool arguments back to the model instead of executing them", async () => {
+    globalThis.fetch = mockFetch(
+      sseEnvelope(
+        chunk({ tool_calls: [{ index: 0, id: "call", function: { name: "bash", arguments: '{"command":' } }] }),
+      ) +
+        sseEnvelope(finishChunk("tool_calls")) +
+        DONE_SSE,
+    );
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake" }));
+    expect(events.at(-1)).toMatchObject({ type: "done", reason: "toolUse" });
+
+    const message = (events.at(-1) as Extract<AssistantMessageEvent, { type: "done" }>).message;
+    // pi's validateToolArguments reports `argumentsError` to the model, so the
+    // call stays unexecuted rather than running with a partial argument object.
+    expect(message.content[0]).toMatchObject({ type: "toolCall", arguments: {}, argumentsError: expect.any(String) });
+    expect(message.content[0]).not.toHaveProperty("arguments.command");
   });
 
   it("rejects a tool finish without tool calls", async () => {
