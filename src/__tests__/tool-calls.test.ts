@@ -1,6 +1,6 @@
 import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { type FinishedToolCallArguments, ToolCallAccumulator } from "../protocol/tool-calls.js";
+import { type FinishedToolCallArguments, parseFinishedArguments, ToolCallAccumulator } from "../protocol/tool-calls.js";
 
 function makeOutput(): AssistantMessage {
   return {
@@ -94,5 +94,47 @@ describe("ToolCallAccumulator finished arguments", () => {
       function: { name: "bash", arguments: '{"command":' },
     });
     expect(() => toolCalls.finalize()).toThrow("Invalid or truncated Qoder tool call arguments");
+  });
+
+  it("serializes an already-parsed argument object instead of concatenating [object Object]", () => {
+    const output = makeOutput();
+    const toolCalls = new ToolCallAccumulator(output, () => {}, parseFinishedArguments);
+
+    // The gateway can deliver `arguments` as a parsed value even though the
+    // declared shape is a string.
+    toolCalls.processNativeDelta({
+      index: 0,
+      id: "call-1",
+      function: { name: "edit", arguments: { path: "/a/b.c" } as unknown as string },
+    });
+    expect(toolCalls.finalize()).toBe(true);
+    expect(output.content[0]).toMatchObject({ type: "toolCall", arguments: { path: "/a/b.c" } });
+  });
+});
+
+describe("parseFinishedArguments local repair fallback", () => {
+  it("recovers raw newlines and tabs inside string values", () => {
+    // A model writing kernel C sources emits the file's bytes verbatim.
+    const raw = '{"path":"/k/cs_dsp.h","edits":[{"oldText":"int f(\n\tint x)","newText":"int f(int x)"}]}';
+    expect(parseFinishedArguments(raw).arguments).toEqual({
+      path: "/k/cs_dsp.h",
+      edits: [{ oldText: "int f(\n\tint x)", newText: "int f(int x)" }],
+    });
+  });
+
+  it("recovers illegal backslash escapes", () => {
+    expect(parseFinishedArguments('{"command":"grep -P \\d src"}').arguments).toEqual({
+      command: "grep -P \\d src",
+    });
+  });
+
+  it("still rejects arguments truncated by the output limit", () => {
+    expect(() => parseFinishedArguments('{"path":"/a","edits":[{"oldText":"foo')).toThrow(
+      "Invalid or truncated Qoder tool call arguments",
+    );
+  });
+
+  it("still rejects a non-object payload", () => {
+    expect(() => parseFinishedArguments('["a","b"]')).toThrow("Invalid or truncated Qoder tool call arguments");
   });
 });
