@@ -1,5 +1,6 @@
 import type { AssistantMessage, AssistantMessageEventStream, JsonObject, ToolCall } from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
+import { repairJsonEscapes } from "./json-repair.js";
 
 export type ToolCallStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
 
@@ -19,7 +20,8 @@ export type FinishedToolCallArguments = { arguments: JsonObject; argumentsError?
  *
  * When the host cannot carry the diagnostic, a finished call with `{}` would be
  * silently executed (only schema-required fields would fail), so the fallback
- * keeps failing the stream instead.
+ * repairs escape damage and still fails the stream when the text is not
+ * recoverable (see {@link parseFinishedArguments}).
  */
 function resolveHostParseFinishedArguments(): ((value: string) => FinishedToolCallArguments) | undefined {
   const candidate = (piAi as Record<string, unknown>).parseToolCallArguments;
@@ -28,8 +30,15 @@ function resolveHostParseFinishedArguments(): ((value: string) => FinishedToolCa
   return (value) => parse(value);
 }
 
-/** Strict parse used when the host predates `argumentsError`; throws on bad text. */
-function parseFinishedArgumentsStrictly(value: string): FinishedToolCallArguments {
+/**
+ * Parse used when the host predates `argumentsError`; throws on bad text.
+ *
+ * Illegal escapes and raw control characters inside string literals are
+ * re-escaped first, because those describe a *complete* argument object that
+ * `JSON.parse` alone cannot read (see `json-repair.ts`). Structure is never
+ * repaired: a call cut off by the output limit still throws.
+ */
+export function parseFinishedArguments(value: string): FinishedToolCallArguments {
   return { arguments: parseArguments(value) };
 }
 
@@ -85,9 +94,8 @@ export class ToolCallAccumulator {
       block.name = state.name;
     }
 
-    if (delta.function?.arguments) {
-      this.appendArguments(state, delta.function.arguments);
-    }
+    const argumentsDelta = argumentsText(delta.function?.arguments);
+    if (argumentsDelta) this.appendArguments(state, argumentsDelta);
   }
 
   startDsmlCall(id: string, name: string): void {
@@ -192,14 +200,50 @@ export class ToolCallAccumulator {
  */
 type ToolCallWithArgumentsError = ToolCall & { argumentsError?: string };
 
-const defaultParseFinishedArguments = resolveHostParseFinishedArguments() ?? parseFinishedArgumentsStrictly;
+const defaultParseFinishedArguments = resolveHostParseFinishedArguments() ?? parseFinishedArguments;
+
+/**
+ * Normalize a streamed argument fragment to text.
+ *
+ * `function.arguments` is typed as a string, but the gateway occasionally
+ * delivers an already-parsed JSON value. Concatenating that would accumulate
+ * "[object Object]" and fail with the same "truncated" diagnostic as a real
+ * cut-off, so serialize objects instead of stringifying them by accident.
+ */
+function argumentsText(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return undefined;
+    }
+  }
+  return String(value);
+}
 
 function parseArguments(value: string): JsonObject {
+  const parsed = parseJsonObject(value);
+  if (parsed) return parsed;
+
+  // Only pay for a second parse when the repair actually changed something.
+  const repaired = repairJsonEscapes(value);
+  if (repaired !== value) {
+    const repairedObject = parseJsonObject(repaired);
+    if (repairedObject) return repairedObject;
+  }
+
+  throw new Error("Invalid or truncated Qoder tool call arguments");
+}
+
+/** Parse finished argument text as a JSON object, or return null. */
+function parseJsonObject(value: string): JsonObject | null {
   try {
     const parsed: unknown = JSON.parse(value || "{}");
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed as JsonObject;
     }
   } catch {}
-  throw new Error("Invalid or truncated Qoder tool call arguments");
+  return null;
 }
