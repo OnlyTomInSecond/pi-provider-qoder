@@ -8,18 +8,17 @@ import type {
 } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The pinned 1.2.0 host predates `argumentsError`, so simulate the newer host
-// by adding the export the plugin probes for. This keeps the integration test
-// independent of whichever pi-ai version happens to be installed.
+// Override the host parser so this integration test stays independent of the
+// installed pi-ai version: whatever the host exposes, the plugin must forward
+// the diagnostic it reports.
 vi.mock("@earendil-works/pi-ai", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@earendil-works/pi-ai")>();
-  const existing = (actual as Record<string, unknown>).parseToolCallArguments;
   return {
     ...actual,
-    parseToolCallArguments:
-      typeof existing === "function"
-        ? existing
-        : (json: string | undefined) => ({ arguments: {}, argumentsError: `host reported: ${json ?? ""}` }),
+    parseToolCallArguments: (json: string | undefined) => ({
+      arguments: {},
+      argumentsError: `host reported: ${json ?? ""}`,
+    }),
   };
 });
 
