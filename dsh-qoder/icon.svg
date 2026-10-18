@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Qoder">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#g)"/>
+  <path d="M32 13c-10.5 0-19 8.5-19 19s8.5 19 19 19c3.6 0 7-1 9.9-2.8l4.9 4.9 4.2-4.2-4.6-4.6A18.9 18.9 0 0 0 51 32c0-10.5-8.5-19-19-19zm0 8.2A10.8 10.8 0 0 1 42.8 32 10.8 10.8 0 0 1 32 42.8 10.8 10.8 0 0 1 21.2 32 10.8 10.8 0 0 1 32 21.2z" fill="#fff"/>
+  <circle cx="32" cy="32" r="3.2" fill="#fff"/>
+</svg>

@@ -1,0 +1,7 @@
+# DeepSeek Harness plugin bundle: Qoder AI provider routes.
+# The plugin registers `qoder` (global); `qoder-cn` joins automatically when CN
+# credentials are visible, or set `regions: [global, cn]` explicitly.
+- insert:
+    - id: llm-qoder
+      name: '@local/dsh-llm-qoder'
+      config: {}
