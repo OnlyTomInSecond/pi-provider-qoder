@@ -1,0 +1,35 @@
+{
+  "name": "@local/dsh-llm-qoder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness provider plugin for Qoder AI models and quota",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "scripts/smoke.mjs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "3.18.5",
+    "esbuild": "^0.28.1"
+  }
+}
