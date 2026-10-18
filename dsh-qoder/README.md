@@ -2,11 +2,119 @@
 
 让 DeepSeek Harness 直接使用 **Qoder** 的模型与额度。协议层（PAT/刷新令牌、COSY 签名、模型目录、SSE 网关、thinking/DSML 工具调用处理）复用 `pi-provider-qoder` 的已验证实现，本包只保留 DSH 适配层。
 
-## 安装
+## 从源码安装
 
-已通过 DSH 插件管理器（`plugin_manager` 的 `install_bundle`）安装到当前 `web` profile；包内 `cordis.patch.yml` 会插入 `llm-qoder` 行，并同时注册 `qoder`（国际区）和 `qoder-cn`（中国区）两条路由。未在 Models 页添加的区域不会出现在模型选择器里。
+### 0. 准备
 
-修改代码后运行 `node build.mjs` 重新生成 `index.js`，再对同一目录执行一次 `remove_bundle` + `install_bundle`，让 Harness 加载新的模块代。
+- Node.js 22+ 与 `pnpm`（DSH 自身需要）
+- 可运行的 DSH：源码 checkout，或已安装的 `dsh` CLI
+- Git
+
+插件本身没有运行时依赖，Qoder 协议层会打进 `index.js`；构建期依赖只有 `esbuild` 与 `@deepseek-ai/schemastery`。
+
+### 1. 下载并构建
+
+```bash
+git clone https://github.com/simonsmh/pi-provider-qoder.git
+cd pi-provider-qoder/dsh-qoder
+npm install
+npm run build
+```
+
+`npm install` 安装构建期依赖，`npm run build` 生成 `index.js`。有 lockfile 时也可以用 `npm ci`。
+
+### 2. 安装到 DSH profile
+
+下面以 Web UI 使用的 `web` profile 为例；其他 profile 换成对应名字。**必须使用绝对路径**：`installBundle` 最终执行 `pnpm add <spec>`，工作目录是 profile 目录，只有 `./`、`../` 会相对调用方解析，裸相对路径会落到 `~/.dsh/profiles/<profile>/` 下。
+
+**方式 A：Agent 工具（推荐）**
+
+```
+plugin_manager(action="install_bundle", target="/绝对路径/pi-provider-qoder/dsh-qoder")
+```
+
+**方式 B：DSH CLI**
+
+```bash
+dsh plugin --profile web add /绝对路径/pi-provider-qoder/dsh-qoder
+```
+
+如果 DSH 是源码 checkout、没有全局 `dsh`：
+
+```bash
+cd /path/to/deepseek-harness
+pnpm dsh plugin --profile web add /绝对路径/pi-provider-qoder/dsh-qoder
+```
+
+**方式 C：Web UI**
+
+侧边栏 **Plugins → Add plugin**，填入同一个绝对路径，确认安装。
+
+安装后：
+
+- profile 的 `package.json` 增加 `"@local/dsh-llm-qoder": "link:/.../dsh-qoder"`
+- `dsh.profile.bundles` 末尾加入 `@local/dsh-llm-qoder`
+- 包内 `cordis.patch.yml` 插入 `llm-qoder` 行，同时注册 `qoder` 与 `qoder-cn` 两条路由
+
+### 3. Models 页的 key-only 布局
+
+Qoder 的 provider profile 只有一个 `apiKeyEnv` 字段。DSH 官方的 Models 页只内置了 `llm-deepseek` 和 `llm-pi-ai` 两种布局；未打补丁时，Add provider 对未知命名空间只显示提示，无法输入 key。
+
+- 如果 DSH 源码已经包含 `key-only` 布局（`packages/client/ui-settings-models/src/client/ProviderEditor.tsx` 里的 `isKeyOnlyProfile`），跳过本节。
+- 否则在 DSH checkout 应用补丁并重建 client bundle：
+
+```bash
+cd /path/to/deepseek-harness
+git apply /绝对路径/pi-provider-qoder/dsh-qoder/patches/dsh-models-key-only.patch
+pnpm --filter @deepseek-ai/dsh-client-ui-settings-models bundle
+```
+
+补丁只做一件事：任何 profile 只有 `apiKeyEnv` 的 provider，都复用官方 API-key 卡片，没有任何 Qoder 专属代码。补丁基于 DSH `0.2.1-rc.2`；版本不同导致上下文不匹配时，按 `isKeyOnlyProfile` 与 `layoutOf` 的几行手动合并即可。
+
+- 如果使用**已安装的发行版**、无法给 DSH 打补丁，改用「无 UI 配置」：在 profile patch 写入 provider profile，并用环境变量提供 token：
+
+```yaml
+- id: llm-qoder
+  name: '@local/dsh-llm-qoder'
+  config:
+    providers:
+      qoder:
+        apiKeyEnv: QODER_API_KEY
+```
+
+```bash
+QODER_API_KEY=pt-... dsh web   # 或该安装的启动命令
+```
+
+CN 区把 `qoder` / `QODER_API_KEY` 换成 `qoder-cn` / `QODER_CN_API_KEY`。
+
+### 4. 验证
+
+- 重启或刷新后，**Settings → Models → Add provider** 应出现 `Qoder` / `Qoder CN`。
+- 添加 token 后，模型选择器出现对应模型。
+- 命令行检查 composed config：`dsh --profile web --dump-config | grep -A3 llm-qoder`
+- `~/.dsh/qoder/` 出现目录缓存，说明后台实时目录刷新成功（首次使用可能先显示内置静态模型）。
+
+### 5. 更新
+
+```bash
+cd pi-provider-qoder/dsh-qoder
+npm run build
+```
+
+然后对同一目录再执行一次 remove + install，让 Harness 导入新的模块代：
+
+```
+plugin_manager(action="remove_bundle", target="@local/dsh-llm-qoder")
+plugin_manager(action="install_bundle", target="/绝对路径/pi-provider-qoder/dsh-qoder")
+```
+
+如果改动了 DSH 的 client bundle（例如 `ProviderEditor.tsx`），重新执行 `pnpm --filter @deepseek-ai/dsh-client-ui-settings-models bundle`，并硬刷新页面。
+
+### 6. 卸载
+
+- Agent：`plugin_manager(action="remove_bundle", target="@local/dsh-llm-qoder")`
+- Web：**Plugins** 页找到该 bundle，点 **Remove**
 
 ## 凭据
 
