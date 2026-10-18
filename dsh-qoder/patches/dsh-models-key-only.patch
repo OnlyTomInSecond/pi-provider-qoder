@@ -1,0 +1,77 @@
+diff --git a/packages/client/ui-settings-models/src/client/ProviderEditor.tsx b/packages/client/ui-settings-models/src/client/ProviderEditor.tsx
+index 262f8c9d55..cd20c8c690 100644
+--- a/packages/client/ui-settings-models/src/client/ProviderEditor.tsx
++++ b/packages/client/ui-settings-models/src/client/ProviderEditor.tsx
+@@ -24,6 +24,7 @@
+ import { useEffect, useMemo, useState } from 'react'
+ import type { ReactNode } from 'react'
+ import type { CredentialInfo, LlmNativeAuth, SettingsNamespaceView, SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
++import type { SchemaNode } from '@deepseek-ai/dsh-client-ui-settings/client'
+ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+ import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+ import {
+@@ -44,7 +45,7 @@ import { ApiKeyInput } from './ApiKeyInput.tsx'
+ import styles from './ModelsSection.module.css'
+ 
+ /** Per-adapter-family curated field sets (unknown namespaces get the hint alone). */
+-type EditorLayout = 'deepseek' | 'pi-ai' | 'unknown'
++type EditorLayout = 'deepseek' | 'pi-ai' | 'key-only' | 'unknown'
+ 
+ 
+ 
+@@ -150,6 +151,17 @@ export function pathOps(
+   return ops
+ }
+ 
++/**
++ * Whether the addressed profile only names its credential reference, so the
++ * key field is the whole card. Any plugin's `{ apiKeyEnv }` profile qualifies
++ * without the Models page knowing the plugin.
++ */
++function isKeyOnlyProfile(node: SchemaNode | undefined): boolean {
++  if (node?.type !== 'object') return false
++  const fields = Object.keys(node.dict ?? {})
++  return fields.length === 1 && fields[0] === 'apiKeyEnv'
++}
++
+ /** The editor layout the owning namespace selects. */
+ function layoutOf(ns: string): EditorLayout {
+   if (ns === 'llm-deepseek') return 'deepseek'
+@@ -196,7 +208,8 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
+   const node = useMemo(() => schema.nodeAtPath(root, settingsPath), [root, schema, settingsPath])
+   const fallback = schema.getPath(namespace.value, settingsPath)
+   const disabled = props.readOnly || busy
+-  const layout = layoutOf(namespace.ns)
++  const declaredLayout = layoutOf(namespace.ns)
++  const layout: EditorLayout = declaredLayout === 'unknown' && isKeyOnlyProfile(node) ? 'key-only' : declaredLayout
+   const keyRef = refFor(schema, namespace, settingsPath, props.provider)
+   // The same schema read the create card makes, so the choices offered here
+   // and there cannot drift apart: both come from the adapter's own `Config`.
+@@ -269,7 +282,8 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
+     const ns = namespace.ns
+     // A pi-ai profile names the conventional reference only when this page is
+     // about to store a key. Otherwise the provider keeps its native auth path.
+-    const next = layout === 'pi-ai' && stringAt(draft, 'apiKeyEnv') === undefined
++    const next = (layout === 'pi-ai' || layout === 'key-only')
++      && stringAt(draft, 'apiKeyEnv') === undefined
+       && stringAt(fallback, 'apiKeyEnv') === undefined && keyValue.length > 0
+       ? schema.setPath(draft, ['apiKeyEnv'], keyRef)
+       : draft
+@@ -351,7 +365,7 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
+    * narrowed so the per-family branches below are total: an unknown namespace
+    * renders the hint instead and never reaches this body.
+    */
+-  const curatedFields = (family: 'deepseek' | 'pi-ai'): ReactNode => {
++  const curatedFields = (family: 'deepseek' | 'pi-ai' | 'key-only'): ReactNode => {
+     // What a hand-declared route names for itself and nothing else can supply.
+     // A whole-section `llm-deepseek` profile is a composition fact with no
+     // per-route identity for its schema to carry, hence the family test.
+@@ -437,7 +451,7 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
+             {credentialHint === undefined ? null : <p id={`${props.provider}-credential-hint`} className={styles[missingRefs ? 'notice' : detectedRef === undefined ? 'advancedHint' : 'savedNotice']}>{credentialHint}</p>}
+             {shownKeyFailure === undefined ? null : <p className={styles['error']}>{t(shownKeyFailure)}</p>}
+           </div>}
+-        {props.credentialOnly === true ? null : <details className={styles['customized']}>
++        {family === 'key-only' || props.credentialOnly === true ? null : <details className={styles['customized']}>
+           <summary className={styles['customizedSummary']}>{t('customized')}</summary>
+           <div className={styles['customizedBody']}>
+             {/* The name and the protocol are the create card's two remaining

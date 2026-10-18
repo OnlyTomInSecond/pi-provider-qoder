@@ -17,6 +17,7 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "patches",
     "scripts/smoke.mjs"
   ],
   "dsh": {
