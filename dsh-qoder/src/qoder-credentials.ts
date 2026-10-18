@@ -1,13 +1,17 @@
 /**
  * Qoder credential resolution for the harness.
  *
- * Priority: a PAT/access token in the environment or the DSH credential seam
- * → the DSH record `llm-qoder/<provider>`. Refreshed credentials are cached in
+ * A raw access token from the environment or the DSH credential seam stays
+ * authoritative. Otherwise a persisted grant (`llm-qoder/<provider>`) is reused
+ * while the PAT it was exchanged from is still the configured one; a changed
+ * PAT is exchanged instead of shadowed, and a grant that fails to refresh
+ * falls back to exchanging the current PAT. Refreshed credentials are cached in
  * memory and written back to the same DSH record. No other application's
  * credential store is read.
  */
 import type { OAuthCredentials } from "@earendil-works/pi-ai";
 import { credentialsFromPat } from "./qoder/auth/pat.js";
+import { decodePatRefresh, isPatRefresh } from "./qoder/auth/refresh.js";
 import {
   qoderCredentialNeedsRefresh,
   refreshQoderTokenForMode,
@@ -93,21 +97,6 @@ export class QoderCredentialStore {
     const providerID = region.providerID;
 
     const token = await this.findToken(mode);
-    if (token?.kind === "pat") {
-      let credentials: QoderCredentials;
-      try {
-        credentials = (await credentialsFromPat(token.value, mode)) as QoderCredentials;
-      } catch (error) {
-        throw new QoderAuthError(
-          `Qoder PAT exchange failed for ${providerID}: ${error instanceof Error ? error.message : String(error)}`,
-          "INVALID_CREDENTIAL",
-        );
-      }
-      rememberQoderCredential(providerID, credentials);
-      this.memory.set(mode, credentials);
-      if (this.persist) await this.writeRecord(mode, credentials);
-      return credentials;
-    }
     if (token?.kind === "access") {
       const identity = await resolveQoderIdentity(token.value, providerID, mode).catch(() => undefined);
       const credentials: QoderCredentials = {
@@ -126,28 +115,59 @@ export class QoderCredentialStore {
       return credentials;
     }
 
-    let credentials = await this.readDshRecord(mode);
-
-    if (!credentials) {
-      throw new QoderAuthError(
-        `No Qoder credentials for ${providerID}. Paste an access token in Settings > Models > Qoder,`
-        + ` or set ${region.patEnvNames[0]}.`,
-      );
+    const stored = await this.readDshRecord(mode);
+    if (stored) {
+      const storedPat = isPatRefresh(stored.refresh) ? decodePatRefresh(stored.refresh).pat : undefined;
+      // Reuse the persisted job token while the configured PAT is the one it
+      // was exchanged from. A changed PAT must win, not be shadowed by the
+      // previous account's grant.
+      const samePat = token?.kind !== "pat" || storedPat === token.value;
+      if (samePat) {
+        if (!qoderCredentialNeedsRefresh(stored)) {
+          rememberQoderCredential(providerID, stored);
+          this.memory.set(mode, stored);
+          return stored;
+        }
+        try {
+          const refreshed = (await refreshQoderTokenForMode(stored, mode)) as QoderCredentials;
+          rememberQoderCredential(providerID, refreshed);
+          this.memory.set(mode, refreshed);
+          if (this.persist) await this.writeRecord(mode, refreshed);
+          return refreshed;
+        } catch (error) {
+          if (token?.kind !== "pat") {
+            throw new QoderAuthError(
+              `Qoder credentials for ${providerID} expired and could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+              "INVALID_CREDENTIAL",
+            );
+          }
+          // The stored grant could not refresh; exchange the PAT the user
+          // configured now instead of failing on the old grant.
+          debugLog(`Qoder stored grant refresh failed for ${providerID}`, error);
+        }
+      }
     }
-    if (qoderCredentialNeedsRefresh(credentials)) {
+
+    if (token?.kind === "pat") {
+      let credentials: QoderCredentials;
       try {
-        credentials = (await refreshQoderTokenForMode(credentials, mode)) as QoderCredentials;
+        credentials = (await credentialsFromPat(token.value, mode)) as QoderCredentials;
       } catch (error) {
         throw new QoderAuthError(
-          `Qoder credentials for ${providerID} expired and could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+          `Qoder PAT exchange failed for ${providerID}: ${error instanceof Error ? error.message : String(error)}`,
           "INVALID_CREDENTIAL",
         );
       }
+      rememberQoderCredential(providerID, credentials);
+      this.memory.set(mode, credentials);
+      if (this.persist) await this.writeRecord(mode, credentials);
+      return credentials;
     }
-    rememberQoderCredential(providerID, credentials);
-    this.memory.set(mode, credentials);
-    if (this.persist) await this.writeRecord(mode, credentials);
-    return credentials;
+
+    throw new QoderAuthError(
+      `No Qoder credentials for ${providerID}. Paste an access token in Settings > Models > Qoder,`
+      + ` or set ${region.patEnvNames[0]}.`,
+    );
   }
 
   private service(): DshCredentials | undefined {

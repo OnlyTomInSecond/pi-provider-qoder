@@ -129,6 +129,8 @@ plugin_manager(action="install_bundle", target="/绝对路径/pi-provider-qoder/
 
 输入值以 `pt-` 开头时按 PAT 换取短时 job token；否则按 `jt-` 访问令牌直接使用。模型目录缓存同样只落在 `$DSH_HOME/qoder/`。
 
+冷启动时优先复用未过期的 `llm-qoder/<provider>` grant；只有配置的 PAT 变了、或 grant 刷新失败时才重新兑换。兑换失败会把 Qoder 返回的错误体一并显示，便于区分 token 无效与网络/协议问题。
+
 ## 使用
 
 Host 侧安装后立即生效。**Settings → Models → Add provider** 中会列出 `Qoder` 和 `Qoder CN`；添加后模型选择器出现对应模型（以 Qoder 实时目录为准）。Models 页对任何「profile 只有 `apiKeyEnv` 一个字段」的供应商复用同一张 key-only 卡片，不需要供应商专属 UI。
