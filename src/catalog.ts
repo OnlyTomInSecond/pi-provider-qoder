@@ -48,6 +48,21 @@ export interface QoderModelEntry {
   [key: string]: unknown;
 }
 
+/**
+ * omp fork's `ThinkingConfig` shape. The fork reads `model.thinking` (not the
+ * `thinkingLevelMap` that earendil pi-ai exposes), and when it is absent omp
+ * fills a generic default ladder (`minimal`..`high`) instead of the model's
+ * real efforts - so `DeepSeek-V4-Pro` would show `low`/`medium` it does not
+ * support. Defining this inline because the plugin compiles against
+ * @earendil-works/pi-ai, which has no such field.
+ */
+export interface QoderThinkingConfig {
+  mode: "effort";
+  efforts: readonly ThinkingLevel[];
+  defaultLevel?: ThinkingLevel;
+  requiresEffort?: boolean;
+}
+
 export interface QoderModelDef {
   id: string;
   upstreamKey?: string;
@@ -58,6 +73,7 @@ export interface QoderModelDef {
   reasoning: boolean;
   supportsEffort: boolean;
   thinkingLevelMap?: ThinkingLevelMap;
+  thinking?: QoderThinkingConfig;
   input: ("text" | "image")[];
   cost: typeof ZERO_COST;
   contextWindow: number;
@@ -526,6 +542,35 @@ function buildThinkingLevelMap(entry: QoderModelEntry): ThinkingLevelMap | undef
   return undefined;
 }
 
+/**
+ * Map Qoder's `thinking_config` to omp's `thinking` metadata so omp's effort
+ * picker lists the actual supported levels (it reads `thinking.efforts`, not
+ * `thinkingLevelMap`). Only effort-based models have a meaningful ladder;
+ * toggle-only models (no `efforts`) return undefined so omp falls back to its
+ * generic behavior.
+ */
+export function buildThinkingConfig(entry: QoderModelEntry): QoderThinkingConfig | undefined {
+  const tc = entry.thinking_config;
+  const efforts = tc?.enabled?.efforts;
+  if (!efforts || typeof efforts !== "object") return undefined;
+
+  const supported = new Set(Object.keys(efforts));
+  const ordered = PI_THINKING_LEVELS.filter((level) => supported.has(level));
+  if (ordered.length === 0) return undefined;
+
+  const defaultLevel = PI_THINKING_LEVELS.find((level) => efforts[level]?.is_default);
+
+  return {
+    mode: "effort",
+    efforts: ordered,
+    ...(defaultLevel ? { defaultLevel } : {}),
+    // Qoder's catalog marks a `disabled` branch when thinking can be turned
+    // off. Without it reasoning is mandatory upstream, so omp clamps "off" to
+    // the lowest supported effort instead of disabling.
+    requiresEffort: !tc?.disabled,
+  };
+}
+
 export function getCachedModels(mode: QoderMode): QoderModelDef[] {
   const data = readParsedModelCache(mode);
   if (data && Array.isArray(data.models)) {
@@ -678,6 +723,7 @@ export async function updateQoderModelsCache(
       const isReasoning = !!entry.is_reasoning || !!entry.thinking_config;
       const supportsEffort = !!entry.thinking_config?.enabled?.efforts;
       const thinkingLevelMap = buildThinkingLevelMap(entry);
+      const thinking = buildThinkingConfig(entry);
       // Both regions expose display_name (whitespace-stripped) as the sole
       // pi-visible id. The config stores the upstream key under that id for
       // request-time use.
@@ -694,6 +740,7 @@ export async function updateQoderModelsCache(
         reasoning: isReasoning,
         supportsEffort,
         thinkingLevelMap,
+        thinking,
         input: isVL ? ["text", "image"] : ["text"],
         cost: ZERO_COST,
         contextWindow: ctxLen,
