@@ -122,6 +122,8 @@ The streamed response is normalized into pi thinking blocks regardless of how th
 
 The custom stream supports pi's `onPayload` (before encoding/signing), `onResponse` (before reading the body, including HTTP errors), injected `fetch` (chat and identity lookup), `headers`, `env`, `timeoutMs`, `temperature`, and model/request `maxTokens`. Header overrides are case-insensitive; `null` removes a default. Overriding COSY authentication headers can invalidate signatures. A model `baseUrl` override must point to a Qoder-compatible gateway, not a generic OpenAI endpoint.
 
+pi 1.4's `identity` request option is intentionally not applied to Qoder chat requests. The gateway is not an attribution target, and Qoder's identity is carried by the COSY headers, so the host's `User-Agent` never changes a signature. Explicit `User-Agent` headers from a model or request still win.
+
 Chat POST requests are not automatically retried, even when `maxRetries` is supplied: replaying a generation may duplicate billing. The host can decide when to retry. Transport remains SSE.
 
 ## Usage reporting
@@ -134,8 +136,15 @@ The provider attaches a `fetchUsage` hook to its OAuth config. It hits
 - A link to the account page to buy more Credits.
 
 This hook is host-dependent: stock pi does not read it (no `fetchUsage`
-reference exists in pi-coding-agent 0.75.5 through 1.2.0), so pi shows no Qoder
+reference exists in pi-coding-agent 0.75.5 through 1.4.0), so pi shows no Qoder
 quota. Only hosts that opt into a usage hook (OMP-style) display it.
+
+## Compatibility
+
+Developed and tested against pi / pi-ai 1.4.0. Host packages stay declared as
+`*` peer dependencies so older releases (0.75.5+) continue to load; when a host
+lacks an optional hook or the temporary `@earendil-works/pi-ai/compat` entry
+point, the plugin degrades instead of failing to load.
 
 ## Development
 

@@ -117,6 +117,22 @@ describe("pi request contract", () => {
     expect(events[0]).toMatchObject({ choices: [{ delta: { content: "OK" } }] });
   });
 
+  it("keeps Qoder's request identity independent of pi 1.4 client identity", async () => {
+    let headers: Headers | undefined;
+    const result = await run({
+      fetch: vi.fn(async (_input, init) => {
+        headers = new Headers(init?.headers);
+        return new Response(success);
+      }),
+      // pi 1.4 passes this separately from `headers`. Qoder signs requests with
+      // COSY, so the host's User-Agent and attribution must not leak in.
+      identity: { userAgent: { custom: "pi-test/1.4.0" }, attribution: { name: "pi", url: "https://pi.dev" } },
+    });
+    expect(result.stopReason).toBe("stop");
+    expect(headers?.get("user-agent")).toBeNull();
+    expect(headers?.get("Authorization")).toMatch(/^Bearer COSY\./);
+  });
+
   it("merges caller headers case-insensitively, supports deletion, and honors baseUrl", async () => {
     let url: unknown;
     let headers: Headers | undefined;

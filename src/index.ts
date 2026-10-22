@@ -13,7 +13,7 @@ import { streamQoder } from "./protocol/stream.js";
 import { getQoderBaseUrl, getQoderRegionConfig, QODER_MODES, type QoderMode } from "./region.js";
 
 // Stock pi never reads a `fetchUsage` reference off the oauth config: it is
-// absent from pi-coding-agent 0.75.5 through 1.3.0. The hook is only meaningful
+// absent from pi-coding-agent 0.75.5 through 1.4.0. The hook is only meaningful
 // to hosts that opt in (OMP-style), so extending the type locally keeps it typed
 // instead of smuggled through an `as unknown` cast.
 type QoderOAuth = NonNullable<ProviderConfig["oauth"]> & {

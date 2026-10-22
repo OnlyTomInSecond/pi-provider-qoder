@@ -197,6 +197,10 @@ export function streamQoder(
 
       const chatURL = getQoderChatURL(providerMode, model.baseUrl);
 
+      // pi 1.4 reports its client identity in `options.identity` instead of
+      // merging a User-Agent into `options.headers`. Qoder authenticates with
+      // COSY headers and is not an attribution target, so host identity is not
+      // applied here; model/request headers can still set a User-Agent.
       const headers = buildAuthHeaders(encodedBytes, chatURL, {
         userID: identity.userID,
         authToken: accessToken,
