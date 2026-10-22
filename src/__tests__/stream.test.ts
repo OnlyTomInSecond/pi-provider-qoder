@@ -208,6 +208,43 @@ describe("streamQoder", () => {
     expect(body.model_config.key).toBe("lite");
   });
 
+  it("sends full disable signals when thinking is off", async () => {
+    globalThis.fetch = mockFetch(SUCCESS_SSE);
+    const offOptions = { apiKey: "fake", reasoning: "off" } as unknown as Parameters<typeof streamQoder>[2];
+    await consume(streamQoder(makeModel("qoder", "Ultimate"), makeContext(), offOptions));
+
+    const body = decodeQoderBody(vi.mocked(globalThis.fetch).mock.calls[0][1]);
+    const parameters = body.parameters as Record<string, unknown>;
+    expect(parameters.enable_thinking).toBe(false);
+    expect(parameters.reasoning_effort).toBe("none");
+    expect(body.model_config).toMatchObject({ is_reasoning: false });
+    expect(body.chat_context).toMatchObject({ extra: { modelConfig: { is_reasoning: false } } });
+  });
+
+  it("honors the host's disableReasoning flag as off", async () => {
+    globalThis.fetch = mockFetch(SUCCESS_SSE);
+    const offOptions = { apiKey: "fake", disableReasoning: true } as unknown as Parameters<typeof streamQoder>[2];
+    await consume(streamQoder(makeModel("qoder", "Ultimate"), makeContext(), offOptions));
+
+    const body = decodeQoderBody(vi.mocked(globalThis.fetch).mock.calls[0][1]);
+    const parameters = body.parameters as Record<string, unknown>;
+    expect(parameters.enable_thinking).toBe(false);
+    expect(parameters.reasoning_effort).toBe("none");
+    expect(body.model_config).toMatchObject({ is_reasoning: false });
+  });
+
+  it("disables thinking when reasoning is omitted (pi's off signal", async () => {
+    globalThis.fetch = mockFetch(SUCCESS_SSE);
+    await consume(streamQoder(makeModel("qoder", "Ultimate"), makeContext(), { apiKey: "fake" }));
+
+    const body = decodeQoderBody(vi.mocked(globalThis.fetch).mock.calls[0][1]);
+    const parameters = body.parameters as Record<string, unknown>;
+    expect(parameters.enable_thinking).toBe(false);
+    expect(parameters.reasoning_effort).toBe("none");
+    expect(body.model_config).toMatchObject({ is_reasoning: false });
+    expect(body.chat_context).toMatchObject({ extra: { modelConfig: { is_reasoning: false } } });
+  });
+
   it("binds tools delivered via the transcript system message (pi-ai >=0.86)", async () => {
     globalThis.fetch = mockFetch(SUCCESS_SSE);
     await consume(streamQoder(makeModel(), makeTranscriptContext(), { apiKey: "fake" }));

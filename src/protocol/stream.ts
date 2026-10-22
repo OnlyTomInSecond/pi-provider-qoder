@@ -429,7 +429,24 @@ export function streamQoder(
       // map to the upstream effort name. clampThinkingLevel returns "off" when
       // the level is unsupported or the user disabled thinking.
       const requestedLevel = options?.reasoning;
-      const clamped = requestedLevel ? clampThinkingLevel(model, requestedLevel) : undefined;
+
+      // Normalize every host's "thinking off" signal into one flag. pi and OMP
+      // both resolve level "off" to `reasoning: undefined`; OMP's fork also sets
+      // `disableReasoning` / `forceReasoningOff`; `false` / `"off"` cover older
+      // hosts. When off, skip clamping so the request never snaps back up to a
+      // concrete level.
+      const extOptions = options as
+        | (SimpleStreamOptions & { disableReasoning?: boolean; forceReasoningOff?: boolean })
+        | undefined;
+      const explicitlyOff =
+        extOptions?.disableReasoning === true ||
+        extOptions?.forceReasoningOff === true ||
+        (requestedLevel as unknown) === false ||
+        (requestedLevel as unknown) === "off";
+
+      // `undefined` here (explicit off, omitted level, or clamped to off) means
+      // "disable thinking"; the else branch below turns it into the wire signals.
+      const clamped = !explicitlyOff && requestedLevel ? clampThinkingLevel(model, requestedLevel) : undefined;
       const reasoningLevel = clamped === "off" ? undefined : clamped;
       const parameters: Record<string, unknown> = { max_tokens: maxTokens };
       if (reasoningLevel) {
@@ -446,9 +463,12 @@ export function streamQoder(
           parameters.reasoning_effort = effort;
         }
       } else {
-        // No reasoning level selected (or clamped to off): explicitly disable
-        // thinking so the model does not reason by default.
+        // Explicitly disable thinking. `enable_thinking: false` alone is not
+        // enough: qodercli also sends `reasoning_effort: "none"` (and flips
+        // `model_config.is_reasoning` below), otherwise the gateway still
+        // routes the reasoning model as reasoning-enabled.
         parameters.enable_thinking = false;
+        parameters.reasoning_effort = "none";
       }
 
       const reqBody: Record<string, unknown> = {
@@ -483,14 +503,14 @@ export function streamQoder(
             context: [],
             modelConfig: {
               key: qoderModel,
-              is_reasoning: isReasoning,
+              is_reasoning: reasoningLevel ? isReasoning : false,
             },
             originalContent: lastUserText,
           },
           features: [],
           text: lastUserText,
         },
-        model_config: modelConfig,
+        model_config: reasoningLevel ? modelConfig : { ...modelConfig, is_reasoning: false },
         business: {
           product: "cli",
           version: "1.0.0",
