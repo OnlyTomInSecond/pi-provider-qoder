@@ -467,8 +467,21 @@ export function streamQoder(
         // enough: qodercli also sends `reasoning_effort: "none"` (and flips
         // `model_config.is_reasoning` below), otherwise the gateway still
         // routes the reasoning model as reasoning-enabled.
+        //
+        // Exception: when the catalog positively shows the model has no
+        // disabled branch (effort-based thinking_config without `disabled`,
+        // or thinkingLevelMap pinning `off` to null), some upstreams reject
+        // `reasoning_effort: "none"` outright (Sonus: 400 "Unsupported
+        // value: 'none'"). For those, omit the effort signal — the request
+        // stays valid and `enable_thinking: false` is the strongest disable
+        // the upstream accepts. With no catalog signal either way (static
+        // fallback / tests), keep sending "none".
         parameters.enable_thinking = false;
-        parameters.reasoning_effort = "none";
+        const tc = modelConfig?.thinking_config;
+        const lacksDisabledBranch = (tc?.enabled?.efforts && !tc.disabled) || model.thinkingLevelMap?.off === null;
+        if (!lacksDisabledBranch) {
+          parameters.reasoning_effort = "none";
+        }
       }
 
       const reqBody: Record<string, unknown> = {

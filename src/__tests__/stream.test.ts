@@ -1,3 +1,5 @@
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   Api,
   AssistantMessage,
@@ -10,6 +12,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import * as PiAi from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { clearQoderModelsMemCache } from "../catalog.js";
 import type { QoderUsage } from "../credits.js";
 import { resolveRequestContext, streamQoder } from "../protocol/stream.js";
 import { loadLiveFixture } from "./live-fixture.js";
@@ -243,6 +246,70 @@ describe("streamQoder", () => {
     expect(parameters.reasoning_effort).toBe("none");
     expect(body.model_config).toMatchObject({ is_reasoning: false });
     expect(body.chat_context).toMatchObject({ extra: { modelConfig: { is_reasoning: false } } });
+  });
+
+  function seedModelCache(configs: Record<string, unknown>): string {
+    const path = join(process.env.HOME as string, ".pi", "agent", "qoder-models-cache.json");
+    writeFileSync(path, JSON.stringify({ models: [], configs, updatedAt: Date.now() }));
+    clearQoderModelsMemCache();
+    return path;
+  }
+
+  function unseedModelCache(path: string): void {
+    rmSync(path, { force: true });
+    clearQoderModelsMemCache();
+  }
+
+  it("sends reasoning_effort none when the catalog advertises a disabled branch", async () => {
+    const path = seedModelCache({
+      Ultimate: {
+        key: "ultimate",
+        display_name: "Ultimate",
+        is_reasoning: true,
+        thinking_config: { disabled: { description: "Disable thinking" }, enabled: { efforts: { high: {} } } },
+      },
+    });
+    try {
+      globalThis.fetch = mockFetch(SUCCESS_SSE);
+      const offOptions = { apiKey: "fake", reasoning: "off" } as unknown as Parameters<typeof streamQoder>[2];
+      await consume(streamQoder(makeModel("qoder", "Ultimate"), makeContext(), offOptions));
+
+      const body = decodeQoderBody(vi.mocked(globalThis.fetch).mock.calls[0][1]);
+      const parameters = body.parameters as Record<string, unknown>;
+      expect(parameters.enable_thinking).toBe(false);
+      expect(parameters.reasoning_effort).toBe("none");
+      expect(body.model_config).toMatchObject({ is_reasoning: false });
+    } finally {
+      unseedModelCache(path);
+    }
+  });
+
+  it("omits reasoning_effort none when the catalog shows no disabled branch", async () => {
+    const path = seedModelCache({
+      Sonus: {
+        key: "smodel",
+        display_name: "Sonus",
+        is_reasoning: true,
+        thinking_config: { enabled: { efforts: { high: {} } } },
+      },
+    });
+    try {
+      globalThis.fetch = mockFetch(SUCCESS_SSE);
+      const offOptions = { apiKey: "fake", reasoning: "off" } as unknown as Parameters<typeof streamQoder>[2];
+      await consume(streamQoder(makeModel("qoder", "Sonus"), makeContext(), offOptions));
+
+      const body = decodeQoderBody(vi.mocked(globalThis.fetch).mock.calls[0][1]);
+      const parameters = body.parameters as Record<string, unknown>;
+      // Upstreams without a disabled branch (e.g. Sonus) reject
+      // reasoning_effort "none" with a 400; the effort signal must be omitted
+      // while the other disable signals still go out.
+      expect(parameters.enable_thinking).toBe(false);
+      expect(parameters.reasoning_effort).toBeUndefined();
+      expect(body.model_config).toMatchObject({ is_reasoning: false });
+      expect(body.chat_context).toMatchObject({ extra: { modelConfig: { is_reasoning: false } } });
+    } finally {
+      unseedModelCache(path);
+    }
   });
 
   it("binds tools delivered via the transcript system message (pi-ai >=0.86)", async () => {
