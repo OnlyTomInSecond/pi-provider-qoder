@@ -204,6 +204,26 @@ describe("Qoder model cache", () => {
     expect(getCachedModels("global").map((model) => model.id)).toEqual(["Ultimate"]);
   });
 
+  it("keeps Auto when the service explicitly enables it (display-keyed configs)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            chat: [
+              { key: "auto", enable: true, display_name: "Auto" },
+              { key: "lite", enable: true, display_name: "Lite" },
+            ],
+          }),
+      }),
+    );
+
+    await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
+
+    expect(getCachedModels("global").map((model) => model.id)).toEqual(["Auto", "Lite"]);
+  });
+
   it("records a 1M context window when the catalog omits context_config", async () => {
     vi.stubGlobal(
       "fetch",

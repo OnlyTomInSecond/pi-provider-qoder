@@ -584,7 +584,9 @@ export function getCachedModels(mode: QoderMode): QoderModelDef[] {
     });
     // Older releases injected `auto` without a corresponding service config.
     // Keep an explicitly enabled service model, but drop the legacy fallback.
-    if (data.configs && typeof data.configs === "object" && !data.configs.auto) {
+    // Configs are keyed by display id (`Auto`) since 9d88e99; older caches
+    // still key them by upstream raw key (`auto`), so check both spellings.
+    if (data.configs && typeof data.configs === "object" && !data.configs.auto && !data.configs.Auto) {
       return models.filter((model: QoderModelDef) => model.id.toLowerCase() !== "auto");
     }
     return models;
