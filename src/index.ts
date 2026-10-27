@@ -7,7 +7,7 @@ import {
   refreshQoderTokenForMode,
 } from "./auth/oauth.js";
 import { fetchQoderUsageForMode } from "./auth/usage.js";
-import { getCachedModels, isCacheStale, updateQoderModelsCache, withPriceFactorLabel } from "./catalog.js";
+import { getCachedModels, isCacheStale, updateQoderModelsCache } from "./catalog.js";
 import { registerQoderCreditDisplay } from "./credit-display.js";
 import { debugLog } from "./debug.js";
 import { streamQoder } from "./protocol/stream.js";
@@ -45,11 +45,12 @@ async function registerQoderApi(): Promise<void> {
 
 function modelsForProvider(mode: QoderMode): QoderProviderModel[] {
   // getCachedModels already falls back to the static catalog and stamps
-  // provider/baseUrl; only the price-factor label is presentation-specific.
-  return getCachedModels(mode).map((model) => ({
-    ...model,
-    name: withPriceFactorLabel(model.name, model.priceFactor),
-  }));
+  // provider/baseUrl. The pi-visible id is the whitespace-stripped display name,
+  // so any extra words in `name` (spaces, a price-factor suffix) make pi's model
+  // picker render the id followed by a parenthesised restatement of the same
+  // model. Keep `name` equal to `id`; the multiplier stays available as
+  // `priceFactor` metadata.
+  return getCachedModels(mode).map((model) => ({ ...model, name: model.id }));
 }
 
 function createQoderOAuth(mode: QoderMode): QoderOAuth {

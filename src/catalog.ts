@@ -234,11 +234,6 @@ export function toQoderModelId(displayName?: string): string {
   return (displayName || "QoderModel").replace(/\s+/g, "");
 }
 
-/** Append the relative Credit multiplier so pi's model picker shows it. */
-export function withPriceFactorLabel(name: string, priceFactor?: number): string {
-  return priceFactor !== undefined ? `${name} (×${priceFactor})` : name;
-}
-
 /**
  * Compact description of a fallback (static) catalog entry. The pi-visible id
  * is always derived from `name` (whitespace stripped), matching live entries.

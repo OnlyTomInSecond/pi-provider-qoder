@@ -85,6 +85,30 @@ describe("provider region binding", () => {
   });
 });
 
+describe("model labels", () => {
+  it("never restates the pi model id in the display name", async () => {
+    for (const name of patEnvNames) delete process.env[name];
+    const providers = new Map<string, Record<string, unknown>>();
+    const pi = {
+      registerProvider(providerID: string, config: Record<string, unknown>) {
+        providers.set(providerID, config);
+      },
+      on: vi.fn(),
+    };
+
+    const { default: registerProviders } = await import("../index.js");
+    await registerProviders(pi as never);
+
+    // pi's /model picker renders "id (name)" whenever `name` has words the id
+    // does not (spaces or a "(×N)" suffix), which duplicated every label.
+    for (const providerID of ["qoder", "qoder-cn"]) {
+      const models = (providers.get(providerID)?.models ?? []) as Array<{ id: string; name: string }>;
+      expect(models.length).toBeGreaterThan(0);
+      for (const model of models) expect(model.name).toBe(model.id);
+    }
+  });
+});
+
 describe("qoder-api registry", () => {
   it("registers qoder-api so global streamSimple works for both regions", async () => {
     for (const name of patEnvNames) delete process.env[name];
