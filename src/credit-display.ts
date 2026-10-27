@@ -1,11 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  QODER_STATUS_KEY,
-  qoderMode,
-  quotaDetails,
-  renderCreditFooter,
-  sessionCreditSummary,
-} from "./credit-footer.js";
+import { qoderMode, quotaDetails, renderCreditFooter, sessionCreditSummary } from "./credit-footer.js";
 import { QoderQuotaService, type QuotaState } from "./quota.js";
 import { SessionUsageCache } from "./session-usage.js";
 
@@ -85,18 +79,10 @@ export function registerQoderCreditDisplay(pi: ExtensionAPI, service = new Qoder
     });
   }
 
-  function publish(ctx: ExtensionContext) {
-    if (ctx.hasUI) {
-      // The always-on status line reports only this session's Credits. Account
-      // period quota is account-wide (it includes every other Qoder client), so
-      // it stays out of the bottom bar and is shown by /qoder-usage and by the
-      // opt-in credit footer.
-      const status =
-        qoderMode(ctx.model?.provider) && !owned
-          ? sessionCreditSummary(ctx, sessionUsage.read(ctx.sessionManager)).join(" · ")
-          : undefined;
-      ctx.ui.setStatus(QODER_STATUS_KEY, status || undefined);
-    }
+  function publish(): void {
+    // Qoder deliberately leaves pi's bottom bar untouched: neither session
+    // Credits nor account-period quota are published as an always-on status.
+    // They are available from /qoder-usage and from the opt-in credit footer.
     requestRender?.();
   }
 
@@ -108,13 +94,13 @@ export function registerQoderCreditDisplay(pi: ExtensionAPI, service = new Qoder
     if (!mode || !ctx.hasUI) {
       quota = undefined;
       syncFooter(ctx);
-      publish(ctx);
+      publish();
       return;
     }
     // Never show the previous region/account while resolving the current identity.
     quota = { status: "loading" };
     syncFooter(ctx);
-    publish(ctx);
+    publish();
     try {
       const access = await resolveAccess(ctx);
       if (id !== refreshId) return;
@@ -124,7 +110,7 @@ export function registerQoderCreditDisplay(pi: ExtensionAPI, service = new Qoder
       } else {
         const pending = service.read(mode, { access, refresh: "", expires: Number.POSITIVE_INFINITY }, force);
         quota = service.peek(mode);
-        publish(ctx);
+        publish();
         const result = await pending;
         if (id !== refreshId) return;
         quota = result;
@@ -134,14 +120,14 @@ export function registerQoderCreditDisplay(pi: ExtensionAPI, service = new Qoder
       service.clear(mode);
       quota = { status: "unavailable" };
     }
-    publish(ctx);
+    publish();
     const delay = service.staleAfterMs?.(mode);
     if (delay !== undefined) {
       // One local repaint at cache expiry; this timer never makes a network request.
       expiryTimer = setTimeout(() => {
         if (id !== refreshId) return;
         quota = service.peek(mode);
-        publish(ctx);
+        publish();
       }, Math.ceil(delay) + 1);
       expiryTimer.unref?.();
     }
@@ -184,7 +170,7 @@ export function registerQoderCreditDisplay(pi: ExtensionAPI, service = new Qoder
           return;
         }
         syncFooter(ctx);
-        publish(ctx);
+        publish();
         ctx.ui.notify(
           enabled
             ? "Qoder credit footer enabled for this session. This replaces any other custom footer."

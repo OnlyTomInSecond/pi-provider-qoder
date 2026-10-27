@@ -214,7 +214,7 @@ describe("Qoder credit display registration and safe modes", () => {
 });
 
 describe("Qoder credit display quota lifecycle", () => {
-  it("shows persisted request deductions in both the default status and the usage command", async () => {
+  it("shows persisted request deductions in the usage command but not in the status bar", async () => {
     const app = host();
     const ctx = app.makeContext("qoder-cn");
     ctx.sessionManager = {
@@ -241,7 +241,10 @@ describe("Qoder credit display quota lifecycle", () => {
         ] as unknown as ReturnType<ExtensionContext["sessionManager"]["getEntries"]>,
     };
     await app.emit("session_start", ctx);
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("Qoder CN session: 0.00061327 Credits");
+    // Qoder keeps pi's bottom bar clean: the session total lives in the command
+    // (and in the opt-in credit footer), never in an always-on status entry.
+    expect(app.statuses.has(QODER_STATUS_KEY)).toBe(false);
+    expect(app.ui.setStatus).not.toHaveBeenCalled();
     await app.command("", ctx);
     expect(app.ui.notify).toHaveBeenLastCalledWith(
       expect.stringContaining("Qoder CN session: 0.00061327 Credits"),
@@ -497,7 +500,7 @@ describe("Qoder credit footer ownership", () => {
     expect(app.render()).toContain("12 used · 88 left (credits)");
     expect(app.render()).toContain("Other extension ready");
     expect(app.statuses.has(QODER_STATUS_KEY)).toBe(false);
-    expect(app.ui.setStatus.mock.calls.every(([key]) => key === QODER_STATUS_KEY)).toBe(true);
+    expect(app.ui.setStatus).not.toHaveBeenCalled();
     app.requestRender.mockClear();
     for (const listener of app.branchListeners) listener();
     expect(app.requestRender).toHaveBeenCalledOnce();

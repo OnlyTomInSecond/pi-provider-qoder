@@ -183,10 +183,10 @@ For example, a CN response with `credits: 0.000613272` and `billable: true` cont
 `billable: false` contributes zero. The UI keeps up to eight decimal places; serialized
 usage preserves the full returned precision.
 
-A compact **session-Credits** status is shown for the selected Qoder provider. Account-period
-quota is account-wide (it includes other Qoder clients), so it is never published to the
-always-on bottom bar; `/qoder-usage` shows the session deductions and the account quota.
-For a full credit footer, opt in for the current pi session:
+Qoder leaves pi's always-on bottom bar untouched: no session-Credits or account-period
+status is published there (account quota is account-wide and includes other Qoder clients).
+`/qoder-usage` shows the session deductions and the account quota. For a full credit footer,
+opt in for the current pi session:
 
 ```text
 /qoder-usage footer on

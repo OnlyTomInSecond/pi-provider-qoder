@@ -86,6 +86,11 @@ function displayPath(cwd: string): string {
       : cwd;
 }
 
+/**
+ * Reserved status key. Qoder never publishes an always-on status entry (the
+ * bottom bar stays untouched), but the footer still filters the key so a stale
+ * entry from an older release cannot leak into its render.
+ */
 export const QODER_STATUS_KEY = "qoder-quota";
 
 /** Shared text for the status, command and custom footer. */
