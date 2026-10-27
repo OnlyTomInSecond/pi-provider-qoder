@@ -227,6 +227,16 @@ export function clearQoderModelsMemCache(): void {
 }
 
 /**
+ * Parenthesised hint for a model's relative Credit multiplier, as pi's model
+ * picker renders it (`<id> (<hint>)`). pi only prints a model `name` after the
+ * id when the name carries words the id does not, so the hint must NOT restate
+ * the model name; otherwise every row reads `Model (Model ×N)`.
+ */
+export function priceFactorHint(priceFactor?: number): string | undefined {
+  return priceFactor === undefined ? undefined : `×${priceFactor}`;
+}
+
+/**
  * Derive the only public model id from Qoder's display name.
  * The upstream key remains available solely inside the matching config entry.
  */

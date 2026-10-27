@@ -4,6 +4,7 @@ import {
   contextWindowFromCatalog,
   DEFAULT_CONTEXT_WINDOW,
   getCachedModelConfig,
+  priceFactorHint,
   staticCnModels,
   staticModels,
   toQoderModelId,
@@ -160,6 +161,14 @@ describe("toQoderModelId", () => {
 });
 
 // ── ZERO_COST ─────────────────────────────────────────────────────────────
+
+describe("priceFactorHint", () => {
+  it("formats the relative multiplier without restating the model name", () => {
+    expect(priceFactorHint(3.2)).toBe("×3.2");
+    expect(priceFactorHint(0)).toBe("×0");
+    expect(priceFactorHint(undefined)).toBeUndefined();
+  });
+});
 
 describe("ZERO_COST", () => {
   it("has all zero values", () => {

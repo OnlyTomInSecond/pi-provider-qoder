@@ -86,7 +86,7 @@ describe("provider region binding", () => {
 });
 
 describe("model labels", () => {
-  it("never restates the pi model id in the display name", async () => {
+  it("only adds a multiplier hint, never a second copy of the model name", async () => {
     for (const name of patEnvNames) delete process.env[name];
     const providers = new Map<string, Record<string, unknown>>();
     const pi = {
@@ -100,11 +100,15 @@ describe("model labels", () => {
     await registerProviders(pi as never);
 
     // pi's /model picker renders "id (name)" whenever `name` has words the id
-    // does not (spaces or a "(×N)" suffix), which duplicated every label.
+    // does not, so the name may only carry the multiplier hint. Anything else
+    // makes every row repeat the model name.
     for (const providerID of ["qoder", "qoder-cn"]) {
       const models = (providers.get(providerID)?.models ?? []) as Array<{ id: string; name: string }>;
       expect(models.length).toBeGreaterThan(0);
-      for (const model of models) expect(model.name).toBe(model.id);
+      for (const model of models) {
+        expect(model.name === model.id || /^×[0-9.]+$/.test(model.name)).toBe(true);
+        expect(model.name.startsWith(model.id) && model.name !== model.id).toBe(false);
+      }
     }
   });
 });
