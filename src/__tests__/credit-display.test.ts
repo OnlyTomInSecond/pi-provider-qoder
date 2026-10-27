@@ -198,11 +198,12 @@ describe("Qoder credit display registration and safe modes", () => {
     expect(app.ui.notify).not.toHaveBeenCalled();
   });
 
-  it("keeps RPC status and manual usage available but rejects the terminal footer", async () => {
+  it("keeps manual usage available in RPC mode but rejects the terminal footer", async () => {
     const app = host(fakeService().service, true);
     const ctx = app.makeContext("qoder", "RPC", { mode: "rpc" });
     await app.emit("session_start", ctx);
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("12 used");
+    // Account-period quota is not published to the always-on status line.
+    expect(app.statuses.has(QODER_STATUS_KEY)).toBe(false);
     expect(app.ui.setFooter).not.toHaveBeenCalled();
     await app.command("footer on", ctx);
     expect(app.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("interactive pi terminal"), "warning");
@@ -249,7 +250,7 @@ describe("Qoder credit display quota lifecycle", () => {
   });
   it("reuses quota at lifecycle boundaries and forces a new snapshot after an agent run", async () => {
     const mock = fakeService();
-    const app = host(mock.service);
+    const app = host(mock.service, true);
     for (const event of ["session_start", "model_select", "before_agent_start", "agent_end"]) await app.emit(event);
     expect(mock.read).toHaveBeenCalledTimes(4);
     for (const [index, call] of mock.read.mock.calls.entries()) {
@@ -260,8 +261,7 @@ describe("Qoder credit display quota lifecycle", () => {
       ]);
     }
     expect(app.getApiKeyForProvider).toHaveBeenCalledWith("qoder");
-    expect(app.ui.setFooter).not.toHaveBeenCalled();
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("12 used · 88 left (credits)");
+    expect(app.render()).toContain("12 used · 88 left (credits)");
     expect(app.statuses.get("other-extension")).toBe("Other extension ready");
   });
 
@@ -279,9 +279,9 @@ describe("Qoder credit display quota lifecycle", () => {
     expect(fetchUsage).toHaveBeenCalledOnce();
     await app.emit("agent_end");
     expect(fetchUsage).toHaveBeenCalledTimes(2);
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("25 used · 75 left");
     await app.command();
     expect(fetchUsage).toHaveBeenCalledTimes(3);
+    expect(app.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("25 used · 75 left"), "info");
     now += 29_999;
     await app.emit("before_agent_start");
     expect(fetchUsage).toHaveBeenCalledTimes(3);
@@ -294,14 +294,14 @@ describe("Qoder credit display quota lifecycle", () => {
 
   it("checks account identity before a new turn and hides the old account while resolving it", async () => {
     const mock = fakeService();
-    const app = host(mock.service);
+    const app = host(mock.service, true);
     await app.emit("session_start");
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("12 used");
+    expect(app.render()).toContain("12 used");
     const auth = deferred<string | undefined>();
     app.getApiKeyForProvider.mockReturnValueOnce(auth.promise);
     await app.emit("before_agent_start");
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("loading");
-    expect(app.statuses.get(QODER_STATUS_KEY)).not.toContain("12 used");
+    expect(app.render()).toContain("loading");
+    expect(app.render()).not.toContain("12 used");
     mock.states.set("global", fresh(25, 75));
     auth.resolve("replacement-account-access");
     await settle();
@@ -310,17 +310,17 @@ describe("Qoder credit display quota lifecycle", () => {
       expect.objectContaining({ access: "replacement-account-access" }),
       false,
     );
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("25 used");
+    expect(app.render()).toContain("25 used");
   });
 
   it("uses the CN provider key and a separate region cache", async () => {
     const mock = fakeService();
-    const app = host(mock.service);
+    const app = host(mock.service, true);
     await app.emit("session_start");
     await app.emit("model_select", app.makeContext("qoder-cn"));
     expect(app.getApiKeyForProvider).toHaveBeenLastCalledWith("qoder-cn");
     expect(mock.read).toHaveBeenLastCalledWith("cn", expect.objectContaining({ access: "test-access" }), false);
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("Qoder CN account period: 34 used");
+    expect(app.render()).toContain("Qoder CN account period: 34 used");
   });
 
   it("forces /qoder-usage and explains that it is account-wide period usage", async () => {
@@ -370,12 +370,12 @@ describe("Qoder credit display quota lifecycle", () => {
 
   it("renders safe unavailability rather than leaking authentication errors", async () => {
     const mock = fakeService();
-    const app = host(mock.service);
+    const app = host(mock.service, true);
     await app.emit("session_start");
     app.getApiKeyForProvider.mockRejectedValueOnce(new Error("private credential material"));
     await app.command();
     expect(mock.clear).toHaveBeenCalledWith("global");
-    expect(app.statuses.get(QODER_STATUS_KEY)).toBe("Qoder account period: quota unavailable");
+    expect(app.render()).toContain("Qoder account period: quota unavailable");
     expect(app.ui.notify).toHaveBeenLastCalledWith(expect.not.stringContaining("private credential"), "warning");
   });
 });
@@ -385,13 +385,15 @@ describe("Qoder credit display local timeout and expiry timers", () => {
     vi.useRealTimers();
   });
 
-  it.each([false, true])("bounds a hung credential lookup to 10 seconds (custom footer: %s)", async (footerOptIn) => {
+  // Account-period quota is only rendered by the opt-in footer (never by the
+  // always-on status line), so the display assertions use the footer.
+  it("bounds a hung credential lookup to 10 seconds", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const mock = fakeService();
-    const app = host(mock.service, footerOptIn);
+    const app = host(mock.service, true);
     const auth = deferred<string | undefined>();
     app.getApiKeyForProvider.mockReturnValueOnce(auth.promise);
-    const text = () => (footerOptIn ? app.render() : app.statuses.get(QODER_STATUS_KEY));
+    const text = () => app.render();
     await app.emit("session_start");
     expect(text()).toContain("loading");
     await vi.advanceTimersByTimeAsync(9_999);
@@ -420,41 +422,38 @@ describe("Qoder credit display local timeout and expiry timers", () => {
     expect(mock.read).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])(
-    "marks cached quota stale locally without a fetch (custom footer: %s)",
-    async (footerOptIn) => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      let now = 0;
-      const fetchUsage = vi.fn().mockResolvedValue({ raw: fresh().snapshot });
-      const service = new QoderQuotaService({ fetchUsage, now: () => now, ttlMs: 100 });
-      const app = host(service, footerOptIn);
-      const text = () => (footerOptIn ? app.render() : app.statuses.get(QODER_STATUS_KEY));
-      await app.emit("session_start");
-      expect(text()).toContain("12 used");
-      expect(text()).not.toContain("[stale]");
-      expect(vi.getTimerCount()).toBe(1);
-      now = 99;
-      await vi.advanceTimersByTimeAsync(99);
-      expect(text()).not.toContain("[stale]");
-      // The display adds one millisecond so fractional monotonic timestamps
-      // cannot cause a timer to repaint just before the cache becomes stale.
-      now = 101;
-      await vi.advanceTimersByTimeAsync(2);
-      expect(text()).toContain("12 used · 88 left (credits) [stale]");
-      expect(fetchUsage).toHaveBeenCalledOnce();
-      expect(app.getApiKeyForProvider).toHaveBeenCalledOnce();
-      expect(app.ui.notify).not.toHaveBeenCalled();
-      expect(app.statuses.get("other-extension")).toBe("Other extension ready");
-      expect(vi.getTimerCount()).toBe(0);
-    },
-  );
+  it("marks cached quota stale locally without a fetch", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let now = 0;
+    const fetchUsage = vi.fn().mockResolvedValue({ raw: fresh().snapshot });
+    const service = new QoderQuotaService({ fetchUsage, now: () => now, ttlMs: 100 });
+    const app = host(service, true);
+    const text = () => app.render();
+    await app.emit("session_start");
+    expect(text()).toContain("12 used");
+    expect(text()).not.toContain("[stale]");
+    expect(vi.getTimerCount()).toBe(1);
+    now = 99;
+    await vi.advanceTimersByTimeAsync(99);
+    expect(text()).not.toContain("[stale]");
+    // The display adds one millisecond so fractional monotonic timestamps
+    // cannot cause a timer to repaint just before the cache becomes stale.
+    now = 101;
+    await vi.advanceTimersByTimeAsync(2);
+    expect(text()).toContain("12 used · 88 left (credits) [stale]");
+    expect(fetchUsage).toHaveBeenCalledOnce();
+    expect(app.getApiKeyForProvider).toHaveBeenCalledOnce();
+    expect(app.ui.notify).not.toHaveBeenCalled();
+    expect(app.statuses.get("other-extension")).toBe("Other extension ready");
+    expect(vi.getTimerCount()).toBe(0);
+  });
 
   it("retains the original expiry deadline when a lifecycle event reuses fresh cached quota", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let now = 0;
     const fetchUsage = vi.fn().mockResolvedValue({ raw: fresh().snapshot });
     const service = new QoderQuotaService({ fetchUsage, now: () => now, ttlMs: 100 });
-    const app = host(service);
+    const app = host(service, true);
     await app.emit("session_start");
     now = 70;
     await vi.advanceTimersByTimeAsync(70);
@@ -463,7 +462,7 @@ describe("Qoder credit display local timeout and expiry timers", () => {
     expect(vi.getTimerCount()).toBe(1);
     now = 101;
     await vi.advanceTimersByTimeAsync(31);
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("[stale]");
+    expect(app.render()).toContain("[stale]");
     expect(fetchUsage).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -519,7 +518,7 @@ describe("Qoder credit footer ownership", () => {
     expect(app.unsubscribes[0]).toHaveBeenCalledOnce();
     expect(app.branchListeners.size).toBe(0);
     expect(app.footer).toBeUndefined();
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("12 used");
+    expect(app.statuses.has(QODER_STATUS_KEY)).toBe(false);
     await app.command("footer off");
     await app.emit("agent_end");
     await app.emit("session_shutdown");
@@ -566,7 +565,8 @@ describe("Qoder credit footer ownership", () => {
     expect(app.branchListeners.size).toBe(0);
     app.requestRender.mockClear();
     await app.emit("agent_end");
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("12 used");
+    // The slot belongs to the other footer, so Qoder publishes no status either.
+    expect(app.statuses.has(QODER_STATUS_KEY)).toBe(false);
     expect(app.requestRender).not.toHaveBeenCalled();
     await app.emit("model_select", app.makeContext("openai"));
     await app.emit("model_select", app.context);
@@ -611,7 +611,7 @@ describe("Qoder credit display asynchronous transitions", () => {
   it("does not issue a quota request after an older authentication lookup loses its model race", async () => {
     const mock = fakeService();
     const auth = deferred<string | undefined>();
-    const app = host(mock.service);
+    const app = host(mock.service, true);
     app.getApiKeyForProvider.mockReturnValueOnce(auth.promise);
     await app.emit("session_start");
     await app.emit("model_select", app.makeContext("qoder-cn"));
@@ -619,7 +619,7 @@ describe("Qoder credit display asynchronous transitions", () => {
     await settle();
     expect(mock.read).toHaveBeenCalledOnce();
     expect(mock.read).toHaveBeenLastCalledWith("cn", expect.objectContaining({ access: "test-access" }), false);
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("Qoder CN account period: 34 used");
+    expect(app.render()).toContain("Qoder CN account period: 34 used");
   });
 
   it("does not restore status or a footer after switching to a non-Qoder provider", async () => {
@@ -674,13 +674,14 @@ describe("Qoder credit display asynchronous transitions", () => {
     const mock = fakeService();
     const pending = deferred<QuotaState>();
     mock.read.mockReturnValueOnce(pending.promise);
-    const app = host(mock.service);
+    const app = host(mock.service, true);
     const command = app.command();
     await settle();
     await app.emit("model_select", app.makeContext("qoder-cn"));
     pending.resolve(fresh(900, 100));
     await command;
+    // The obsolete manual refresh must not publish the old region's quota.
     expect(app.ui.notify).not.toHaveBeenCalled();
-    expect(app.statuses.get(QODER_STATUS_KEY)).toContain("Qoder CN account period: 34 used");
+    expect(app.statuses.has(QODER_STATUS_KEY)).toBe(false);
   });
 });

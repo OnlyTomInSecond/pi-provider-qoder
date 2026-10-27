@@ -3,7 +3,6 @@ import {
   QODER_STATUS_KEY,
   qoderMode,
   quotaDetails,
-  quotaSummary,
   renderCreditFooter,
   sessionCreditSummary,
 } from "./credit-footer.js";
@@ -88,14 +87,15 @@ export function registerQoderCreditDisplay(pi: ExtensionAPI, service = new Qoder
 
   function publish(ctx: ExtensionContext) {
     if (ctx.hasUI) {
+      // The always-on status line reports only this session's Credits. Account
+      // period quota is account-wide (it includes every other Qoder client), so
+      // it stays out of the bottom bar and is shown by /qoder-usage and by the
+      // opt-in credit footer.
       const status =
         qoderMode(ctx.model?.provider) && !owned
-          ? [
-              ...sessionCreditSummary(ctx, sessionUsage.read(ctx.sessionManager)),
-              ...quotaSummary(quota, ctx.model?.provider),
-            ].join(" · ")
+          ? sessionCreditSummary(ctx, sessionUsage.read(ctx.sessionManager)).join(" · ")
           : undefined;
-      ctx.ui.setStatus(QODER_STATUS_KEY, status);
+      ctx.ui.setStatus(QODER_STATUS_KEY, status || undefined);
     }
     requestRender?.();
   }
