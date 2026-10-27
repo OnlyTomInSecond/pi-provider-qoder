@@ -9,6 +9,7 @@ import {
   isCacheStale,
   updateQoderModelsCache,
 } from "../catalog.js";
+import { clearCosyVersionMemCache } from "../cosy-version.js";
 import { loadLiveFixture, responseFromFixture } from "./live-fixture.js";
 
 function testHome(): string {
@@ -21,6 +22,10 @@ const CACHE_PATHS = {
 };
 let originalCaches: Record<keyof typeof CACHE_PATHS, string | undefined>;
 
+// Throttle the dynamic COSY-version refresh: these tests stub global fetch for
+// the catalog and must not spend it on the (daily) releases check.
+const COSY_CACHE_PATH = join(testHome(), ".pi", "agent", "qoder-cosy-version-cache.json");
+
 beforeEach(() => {
   clearQoderModelsMemCache();
   originalCaches = {
@@ -28,11 +33,15 @@ beforeEach(() => {
     cn: existsSync(CACHE_PATHS.cn) ? readFileSync(CACHE_PATHS.cn, "utf8") : undefined,
   };
   for (const path of Object.values(CACHE_PATHS)) rmSync(path, { force: true });
+  writeFileSync(COSY_CACHE_PATH, JSON.stringify({ checkedAt: Date.now() }));
+  clearCosyVersionMemCache();
   clearQoderModelsMemCache();
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  rmSync(COSY_CACHE_PATH, { force: true });
+  clearCosyVersionMemCache();
   for (const region of Object.keys(CACHE_PATHS) as Array<keyof typeof CACHE_PATHS>) {
     const path = CACHE_PATHS[region];
     const original = originalCaches[region];
@@ -43,12 +52,58 @@ afterEach(() => {
 });
 
 describe("Qoder model cache", () => {
+  it("refreshes the COSY version before signing the catalog request", async () => {
+    const cosyCachePath = join(testHome(), ".pi", "agent", "qoder-cosy-version-cache.json");
+    rmSync(cosyCachePath, { force: true });
+    clearCosyVersionMemCache();
+
+    const calls: string[] = [];
+    let catalogHeaders: Record<string, string> | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown, init?: { headers?: Record<string, string> }) => {
+        if (String(url).includes("repo.qoder.com")) {
+          calls.push("releases");
+          return new Response(JSON.stringify([{ tag_name: "1.1.99", draft: false, prerelease: false }]), {
+            status: 200,
+          });
+        }
+        calls.push("catalog");
+        catalogHeaders = init?.headers;
+        return new Response(JSON.stringify({ chat: [{ key: "lite", enable: true, display_name: "Lite" }] }), {
+          status: 200,
+        });
+      }),
+    );
+
+    try {
+      await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
+
+      // The catalog request must be signed with the version the refresh
+      // just fetched (1.1.99, ahead of the bundled fallback), not the
+      // stale identity; otherwise the gateway returns the reduced list.
+      expect(calls).toEqual(["releases", "catalog"]);
+      expect(catalogHeaders?.["Cosy-Version"]).toBe("1.1.99");
+      expect(getCachedModels("global").map((model) => model.id)).toEqual(["Lite"]);
+    } finally {
+      rmSync(cosyCachePath, { force: true });
+      clearCosyVersionMemCache();
+    }
+  });
+
   it.each([
     ["global", ["Lite", "GLM5.2"]],
     ["cn", ["Qwen3.7Plus"]],
   ] as const)("maps the %s recorded-format catalog to friendly picker ids", async (region, expectedIds) => {
     const interaction = loadLiveFixture(region).interactions.modelList;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(responseFromFixture(interaction)));
+    // URL-aware: updateQoderModelsCache first refreshes the COSY version
+    // from repo.qoder.com; that call must not consume the catalog fixture.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown) =>
+        String(url).includes("repo.qoder.com") ? new Response("[]", { status: 200 }) : responseFromFixture(interaction),
+      ),
+    );
 
     await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", region);
 
@@ -230,6 +285,26 @@ describe("Qoder model cache", () => {
     clearQoderModelsMemCache();
 
     expect(getCachedModels("global").map((model) => model.id)).toEqual(["Ultimate"]);
+  });
+
+  it("keeps Auto when the service explicitly enables it (display-keyed configs)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            chat: [
+              { key: "auto", enable: true, display_name: "Auto" },
+              { key: "lite", enable: true, display_name: "Lite" },
+            ],
+          }),
+      }),
+    );
+
+    await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
+
+    expect(getCachedModels("global").map((model) => model.id)).toEqual(["Auto", "Lite"]);
   });
 
   it("records a 1M context window when the catalog omits context_config", async () => {

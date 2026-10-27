@@ -1,3 +1,4 @@
+import { parseModelBusyRejection, QoderModelBusyError } from "./model-busy.js";
 import type { ToolCallDelta } from "./tool-calls.js";
 
 /** OpenAI-shaped delta inside a Qoder chunk (reasoning + content + native tool calls). */
@@ -39,6 +40,12 @@ export function decodeQoderSseData(dataStr: string): QoderSsePayload {
 
   const envelope = JSON.parse(dataStr) as { statusCodeValue?: number; body?: string };
   if (envelope.statusCodeValue && envelope.statusCodeValue !== 200) {
+    // Qoder's scheduler rejects a busy model with a nested 10605 envelope; the
+    // stream recovers from those by retrying after the advertised delay.
+    const busy = parseModelBusyRejection(envelope.body);
+    if (busy) {
+      throw new QoderModelBusyError(`Upstream status ${envelope.statusCodeValue}: ${envelope.body}`, busy.retryAfterMs);
+    }
     throw new Error(`Upstream status ${envelope.statusCodeValue}: ${envelope.body}`);
   }
 

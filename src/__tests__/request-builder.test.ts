@@ -53,7 +53,9 @@ describe("buildQoderChatRequest", () => {
     const request = build();
     const parameters = request.body.parameters as Record<string, unknown>;
     expect(parameters.enable_thinking).toBe(false);
-    expect(parameters.reasoning_effort).toBeUndefined();
+    // No catalog signal either way: qodercli also sends reasoning_effort
+    // "none" to switch the gateway off the reasoning path.
+    expect(parameters.reasoning_effort).toBe("none");
     expect(parameters.max_tokens).toBe(131072);
   });
 
@@ -114,5 +116,35 @@ describe("buildQoderChatRequest", () => {
     const a = build(undefined, lite, { key: "lite" }, makeContext("", [], "first"));
     const b = build(undefined, lite, { key: "lite" }, makeContext("", [], "second"));
     expect(a.sessionID).not.toBe(b.sessionID);
+  });
+});
+
+describe("flat Context fallback", () => {
+  // Some hosts export the >=0.86 transcript toolkit yet still pass a flat
+  // Context (omp 18.12.x). There is no folded system message then, so the
+  // resolver must keep the top-level prompt and tools instead of shipping an
+  // empty prompt and `tools: []` (the model then invents DSML markup).
+  const flatContext = {
+    systemPrompt: "legacy prompt",
+    messages: [{ role: "user", content: "hi" }],
+    tools: [{ name: "bash", description: "run a command", parameters: { type: "object", properties: {} } }],
+  } as unknown as TranscriptContext;
+
+  it("keeps the flat prompt and tools when the transcript has no system message", () => {
+    const request = build(undefined, lite, { key: "lite" }, flatContext);
+    const messages = request.body.messages as Array<{ role: string; content: string }>;
+    expect(messages[0]).toEqual({ role: "system", content: "legacy prompt" });
+    const tools = request.body.tools as Array<{ type: string; function: { name: string } }>;
+    expect(tools.map((tool) => tool.function.name)).toEqual(["bash"]);
+  });
+
+  it("keeps the flat prompt when the flat Context carries no tools", () => {
+    const request = build(undefined, lite, { key: "lite" }, {
+      ...flatContext,
+      tools: [],
+    } as unknown as TranscriptContext);
+    expect(request.body.tools).toEqual([]);
+    const messages = request.body.messages as Array<{ role: string; content: string }>;
+    expect(messages[0]).toEqual({ role: "system", content: "legacy prompt" });
   });
 });

@@ -6,6 +6,7 @@ import {
   getSystemMessageText,
   type Model,
   type SimpleStreamOptions,
+  type Tool,
   type TranscriptContext,
   withoutInitialSystemMessage,
 } from "@earendil-works/pi-ai";
@@ -112,18 +113,49 @@ function buildParameters(
   model: Model<Api>,
   modelConfig: QoderModelEntry,
   options?: SimpleStreamOptions,
-): Record<string, unknown> {
+): { parameters: Record<string, unknown>; thinkingEnabled: boolean } {
   const parameters: Record<string, unknown> = { max_tokens: resolveMaxTokens(model, options) };
   if (options?.temperature !== undefined) parameters.temperature = options.temperature;
 
   const requestedLevel = options?.reasoning;
-  const clamped = requestedLevel ? clampThinkingLevel(model, requestedLevel) : undefined;
+
+  // Normalize every host's "thinking off" signal into one flag. pi and OMP both
+  // resolve level "off" to `reasoning: undefined`; OMP's fork also sets
+  // `disableReasoning` / `forceReasoningOff`; `false` / `"off"` cover older
+  // hosts. When off, skip clamping so the request never snaps back up to a
+  // concrete level.
+  const extOptions = options as
+    | (SimpleStreamOptions & { disableReasoning?: boolean; forceReasoningOff?: boolean })
+    | undefined;
+  const explicitlyOff =
+    extOptions?.disableReasoning === true ||
+    extOptions?.forceReasoningOff === true ||
+    (requestedLevel as unknown) === false ||
+    (requestedLevel as unknown) === "off";
+  const clamped = !explicitlyOff && requestedLevel ? clampThinkingLevel(model, requestedLevel) : undefined;
   const reasoningLevel = clamped === "off" ? undefined : clamped;
+
   if (!reasoningLevel) {
-    // No reasoning level selected (or clamped to off): explicitly disable
-    // thinking so the model does not reason by default.
+    // Explicitly disable thinking. `enable_thinking: false` alone is not enough:
+    // qodercli also sends `reasoning_effort: "none"` (and flips
+    // `model_config.is_reasoning`), otherwise the gateway still routes the
+    // reasoning model as reasoning-enabled.
+    //
+    // Exception: when the catalog positively shows the model has no disabled
+    // branch (effort-based thinking_config without `disabled`, or
+    // thinkingLevelMap pinning `off` to null), some upstreams reject
+    // `reasoning_effort: "none"` outright (Sonus: 400 "Unsupported value:
+    // 'none'"). For those, omit the effort signal — the request stays valid and
+    // `enable_thinking: false` is the strongest disable the upstream accepts.
+    // With no catalog signal either way (static fallback / tests), keep sending
+    // "none".
     parameters.enable_thinking = false;
-    return parameters;
+    const tc = modelConfig.thinking_config;
+    const lacksDisabledBranch = (tc?.enabled?.efforts && !tc.disabled) || model.thinkingLevelMap?.off === null;
+    if (!lacksDisabledBranch) {
+      parameters.reasoning_effort = "none";
+    }
+    return { parameters, thinkingEnabled: false };
   }
 
   parameters.enable_thinking = true;
@@ -138,7 +170,7 @@ function buildParameters(
   if (modelConfig.thinking_config?.enabled?.efforts && typeof effort === "string") {
     parameters.reasoning_effort = effort;
   }
-  return parameters;
+  return { parameters, thinkingEnabled: true };
 }
 
 /**
@@ -164,8 +196,17 @@ export function buildQoderChatRequest(input: QoderChatRequestInput): QoderChatRe
   // Resolve the current prompt and tool set in a single transcript pass:
   // getCurrentSystemPrompt() would re-walk the messages (and re-resolve the
   // tools internally) on top of the getCurrentTools() call below.
+  //
+  // The leading system message is the only proof that the host folded
+  // `systemPrompt` and `tools` into the transcript. Some hosts that export the
+  // >=0.86 transcript toolkit still pass a flat Context (omp 18.12.x does), so
+  // when no folded system message exists fall back to the flat fields instead
+  // of silently sending an empty prompt and `tools: []`.
   const currentSystem = getCurrentSystemMessage(context.messages);
-  const systemText = currentSystem ? getSystemMessageText(currentSystem) : "";
+  const flatContext = context as TranscriptContext & { systemPrompt?: unknown; tools?: Tool[] };
+  const systemText = currentSystem
+    ? getSystemMessageText(currentSystem)
+    : contentToText(flatContext.systemPrompt ?? "");
 
   let lastUserText = "";
   for (let i = normalizedMessages.length - 1; i >= 0; i--) {
@@ -183,9 +224,9 @@ export function buildQoderChatRequest(input: QoderChatRequestInput): QoderChatRe
   const fallbackSeed = `${systemText}\0${contentToText(normalizedMessages[0]?.content ?? "")}`;
   const sessionID = resolveSessionID(identity.userID, qoderModel, options, fallbackSeed);
 
-  const currentTools = currentSystem?.toolsAdded ?? [];
+  const currentTools = currentSystem?.toolsAdded ?? flatContext.tools ?? [];
   const toolsRaw = currentTools.length > 0 ? transformTools(currentTools) : undefined;
-  const parameters = buildParameters(model, modelConfig, options);
+  const { parameters, thinkingEnabled } = buildParameters(model, modelConfig, options);
 
   // Qoder groups billing/records per agentic "run". qodercli keeps one
   // request_set_id + business.id per run (created at run start, threaded through
@@ -236,14 +277,14 @@ export function buildQoderChatRequest(input: QoderChatRequestInput): QoderChatRe
         context: [],
         modelConfig: {
           key: qoderModel,
-          is_reasoning: !!modelConfig.is_reasoning,
+          is_reasoning: thinkingEnabled && !!modelConfig.is_reasoning,
         },
         originalContent: lastUserText,
       },
       features: [],
       text: lastUserText,
     },
-    model_config: modelConfig,
+    model_config: thinkingEnabled ? modelConfig : { ...modelConfig, is_reasoning: false },
     // Stable per run: same id/name/begin_at across the run's requests; stage
     // advances init -> start -> processing like qodercli's lifecycle.
     business,

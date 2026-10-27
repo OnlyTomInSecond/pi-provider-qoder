@@ -66,7 +66,14 @@ interface ToolCallState {
  * namespaces, while `ordered` preserves the order in which blocks appeared.
  */
 export class ToolCallAccumulator {
-  private readonly native = new Map<number, ToolCallState>();
+  /**
+   * Native deltas identify a call by `index`, by `id`, or (for argument-only
+   * continuations) by neither. Keying only on `index` merged two parallel calls
+   * whose adapter omitted the index and let a reused index overwrite another
+   * call's identity, so keep an index and an id index and reconcile them.
+   */
+  private readonly byIndex = new Map<number, ToolCallState>();
+  private readonly byId = new Map<string, ToolCallState>();
   private readonly dsml = new Map<string, ToolCallState>();
   private readonly ordered: ToolCallState[] = [];
 
@@ -78,15 +85,51 @@ export class ToolCallAccumulator {
   ) {}
 
   processNativeDelta(delta: ToolCallDelta): void {
-    const index = delta.index ?? 0;
-    let state = this.native.get(index);
-    if (!state) {
-      state = this.createState();
-      this.native.set(index, state);
+    const index = typeof delta.index === "number" ? delta.index : undefined;
+    const id = typeof delta.id === "string" ? delta.id : "";
+    const name = typeof delta.function?.name === "string" ? delta.function.name : "";
+    const argumentsDelta = argumentsText(delta.function?.arguments);
+
+    let state = id ? this.byId.get(id) : undefined;
+
+    if (index !== undefined) {
+      const indexed = this.byIndex.get(index);
+      // An explicit ID always wins over the index. A *different* identified
+      // state already holding this index means the adapter reused it, so rebind
+      // instead of merging two calls' arguments.
+      if (!state) state = indexed;
+      if (state && indexed && indexed !== state && indexed.id && !state.id) {
+        state = indexed;
+      }
+    } else if (!state) {
+      // Argument-only continuation without index or id: only an unambiguous
+      // single open call can own it.
+      const open = this.ordered.filter((candidate) => !candidate.emittedEnd);
+      if (open.length > 1) {
+        throw new Error(`Ambiguous tool-call continuation (candidates=${open.length})`);
+      }
+      state = open[0];
     }
 
-    if (delta.id) state.id = delta.id;
-    if (delta.function?.name) state.name = delta.function.name;
+    if (!state) state = this.createState();
+
+    if (id && state.id && state.id !== id) {
+      // A new explicit identity on an already-identified state: only a fresh
+      // block may take it (the previous call keeps its own id).
+      state = this.createState();
+    }
+    if (name && state.name && state.name !== name) {
+      throw new Error("Tool-call identity conflict: inconsistent name");
+    }
+
+    if (id) {
+      state.id = id;
+      this.byId.set(id, state);
+    }
+    if (index !== undefined && this.byIndex.get(index) !== state) {
+      this.byIndex.set(index, state);
+    }
+    if (name) state.name = name;
     this.openIfIdentifiable(state);
     if (state.emittedStart) {
       const block = this.output.content[state.contentIndex] as ToolCall;
@@ -94,7 +137,6 @@ export class ToolCallAccumulator {
       block.name = state.name;
     }
 
-    const argumentsDelta = argumentsText(delta.function?.arguments);
     if (argumentsDelta) this.appendArguments(state, argumentsDelta);
   }
 
@@ -116,7 +158,8 @@ export class ToolCallAccumulator {
     const parsed = new Map<ToolCallState, FinishedToolCallArguments>();
     for (const state of this.ordered) {
       if (!state.emittedStart && !state.arguments) continue;
-      if (!state.id || !state.name) throw new Error("Incomplete Qoder tool call identity");
+      if (!state.id || !state.name)
+        throw new Error(`Unresolved Qoder tool-call identity (characters=${state.arguments.length})`);
       parsed.set(state, this.parseFinished(state.arguments));
     }
     for (const state of this.ordered) {

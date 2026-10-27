@@ -138,3 +138,52 @@ describe("parseFinishedArguments local repair fallback", () => {
     expect(() => parseFinishedArguments('["a","b"]')).toThrow("Invalid or truncated Qoder tool call arguments");
   });
 });
+
+describe("ToolCallAccumulator identity", () => {
+  it("keeps parallel calls apart when the adapter omits the index", () => {
+    const output = makeOutput();
+    const toolCalls = new ToolCallAccumulator(output, () => {});
+
+    toolCalls.processNativeDelta({ id: "call_a", function: { name: "read", arguments: '{"path":"a"' } });
+    toolCalls.processNativeDelta({ id: "call_b", function: { name: "search", arguments: '{"query":"b"' } });
+    toolCalls.processNativeDelta({ id: "call_a", function: { arguments: "}" } });
+    toolCalls.processNativeDelta({ id: "call_b", function: { arguments: "}" } });
+    expect(toolCalls.finalize()).toBe(true);
+
+    expect(output.content).toEqual([
+      { type: "toolCall", id: "call_a", name: "read", arguments: { path: "a" } },
+      { type: "toolCall", id: "call_b", name: "search", arguments: { query: "b" } },
+    ]);
+  });
+
+  it("starts a new call when a reused index carries a new explicit id", () => {
+    const output = makeOutput();
+    const toolCalls = new ToolCallAccumulator(output, () => {});
+
+    toolCalls.processNativeDelta({ index: 0, id: "call_a", function: { name: "read", arguments: '{"path":"a"}' } });
+    toolCalls.processNativeDelta({ index: 0, id: "call_b", function: { name: "read", arguments: '{"path":"b"}' } });
+    expect(toolCalls.finalize()).toBe(true);
+
+    expect(output.content).toEqual([
+      { type: "toolCall", id: "call_a", name: "read", arguments: { path: "a" } },
+      { type: "toolCall", id: "call_b", name: "read", arguments: { path: "b" } },
+    ]);
+  });
+
+  it("rejects an ambiguous argument-only continuation", () => {
+    const toolCalls = new ToolCallAccumulator(makeOutput(), () => {});
+    toolCalls.processNativeDelta({ id: "call_a", function: { name: "read", arguments: "{" } });
+    toolCalls.processNativeDelta({ id: "call_b", function: { name: "read", arguments: "{" } });
+    expect(() => toolCalls.processNativeDelta({ function: { arguments: "}" } })).toThrow(
+      /Ambiguous tool-call continuation/,
+    );
+  });
+
+  it("rejects inconsistent names for one identity", () => {
+    const toolCalls = new ToolCallAccumulator(makeOutput(), () => {});
+    toolCalls.processNativeDelta({ index: 0, id: "call_a", function: { name: "read", arguments: "{" } });
+    expect(() => toolCalls.processNativeDelta({ index: 0, id: "call_a", function: { name: "write" } })).toThrow(
+      /inconsistent name/,
+    );
+  });
+});

@@ -1,4 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { applyQoderCredits, type QoderProvider, type QoderUsage } from "../credits.js";
 
 /**
  * Qoder-specific request metering fields.
@@ -35,7 +36,7 @@ type QoderAssistantUsage = AssistantMessage["usage"] & QoderCreditsUsage;
  * cacheWrite. Qoder Credits have no native Usage field, so they stay optional
  * runtime metadata on the same object (missing fields remain absent, not zero).
  */
-export function applyQoderUsage(target: AssistantMessage["usage"], value: unknown): void {
+export function applyQoderUsage(target: AssistantMessage["usage"], value: unknown, provider?: QoderProvider): void {
   const usage = asRecord(value);
   if (!usage) return;
   const promptDetails = asRecord(usage.prompt_tokens_details);
@@ -54,6 +55,13 @@ export function applyQoderUsage(target: AssistantMessage["usage"], value: unknow
     target.reasoning = completionDetails.reasoning_tokens;
   }
 
+  // Qoder Credits have no native Usage field, so they ride along as optional
+  // runtime metadata on the same object. `applyQoderCredits` also derives the
+  // actually charged amount (non-billable requests cost zero) and its
+  // reference USD value, and records which provider served the request.
+  applyQoderCredits(target as QoderUsage, usage, provider);
+  // Keep the pre-1.2.0 shape populated as well: older local callers/tests read
+  // `credits` / `original_credits` / `billable` straight off the usage object.
   Object.assign(target as QoderAssistantUsage, parseQoderCreditsUsage(usage));
 }
 

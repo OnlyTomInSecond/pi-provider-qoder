@@ -4,7 +4,7 @@ import type {
   AssistantMessageEventStream,
   ThinkingContent,
 } from "@earendil-works/pi-ai";
-import { stripThinkingTags, ThinkingTagParser } from "./thinking.js";
+import { stripDsmlResidue, stripThinkingTags, ThinkingTagParser } from "./thinking.js";
 
 /** False only when the host explicitly disabled thinking for this request. */
 export function isThinkingRequested(reasoning: unknown): boolean {
@@ -51,11 +51,12 @@ export class ThinkingSink {
 
   /**
    * Reasoning-channel text. Tag artifacts are stripped (Qoder sometimes routes
-   * a literal `<thinking>` opener into `reasoning_content`) and the rest is
-   * appended to a dedicated thinking block.
+   * a literal `<thinking>` opener into `reasoning_content`) along with any
+   * leaked DSML tool-call markup, and the rest is appended to a dedicated
+   * thinking block.
    */
   pushReasoning(text: string): void {
-    const cleaned = stripThinkingTags(text);
+    const cleaned = stripDsmlResidue(stripThinkingTags(text));
     if (!cleaned) return;
     this.openReasoning();
     const block = this.output.content[this.reasoningBlockIndex as number] as ThinkingContent;

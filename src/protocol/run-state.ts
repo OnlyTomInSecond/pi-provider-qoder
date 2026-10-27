@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { QODER_GATEWAY_COSY_VERSION } from "../cosy.js";
+import { getGatewayCosyVersion } from "../cosy-version.js";
 import { LruMap } from "../lru.js";
 
 /**
@@ -97,8 +97,8 @@ function createBusiness(product: string, name: string): QoderRunBusiness {
   return {
     product,
     // business.version carries the client version (qodercli pins its own);
-    // mirror the COSY client identity this plugin emulates.
-    version: QODER_GATEWAY_COSY_VERSION,
+    // mirror the dynamic COSY client identity this plugin signs requests with.
+    version: getGatewayCosyVersion(),
     type: "agent",
     id: crypto.randomUUID(),
     name: runDisplayName(name),

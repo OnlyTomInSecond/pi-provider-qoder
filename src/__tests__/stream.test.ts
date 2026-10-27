@@ -1,3 +1,5 @@
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   Api,
   AssistantMessage,
@@ -10,6 +12,8 @@ import type {
 } from "@earendil-works/pi-ai";
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { clearQoderModelsMemCache } from "../catalog.js";
+import type { QoderUsage } from "../credits.js";
 import { streamQoder } from "../protocol/stream.js";
 import { loadLiveFixture } from "./live-fixture.js";
 
@@ -117,6 +121,34 @@ async function consume(stream: AssistantMessageEventStream): Promise<AssistantMe
     if (ev.type === "done" || ev.type === "error") break;
   }
   return events;
+}
+
+/** Undo the gateway's custom base64 alphabet so a request body can be asserted. */
+function decodeQoderBody(init: RequestInit | undefined): Record<string, unknown> {
+  const custom = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
+  const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const encoded = Buffer.from(init?.body as Uint8Array).toString("utf8");
+  const rearranged = [...encoded]
+    .map((character) => (character === "$" ? "=" : standard[custom.indexOf(character)] || character))
+    .join("");
+  const third = Math.floor(rearranged.length / 3);
+  const base64 =
+    rearranged.slice(rearranged.length - third) +
+    rearranged.slice(third, rearranged.length - third) +
+    rearranged.slice(0, third);
+  return JSON.parse(Buffer.from(base64, "base64").toString("utf8")) as Record<string, unknown>;
+}
+
+function seedModelCache(configs: Record<string, unknown>): string {
+  const path = join(process.env.HOME as string, ".pi", "agent", "qoder-models-cache.json");
+  writeFileSync(path, JSON.stringify({ models: [], configs, updatedAt: Date.now() }));
+  clearQoderModelsMemCache();
+  return path;
+}
+
+function unseedModelCache(path: string): void {
+  rmSync(path, { force: true });
+  clearQoderModelsMemCache();
 }
 
 describe("streamQoder", () => {
@@ -432,14 +464,16 @@ describe("streamQoder", () => {
     expect(msg.usage.cacheRead).toBe(5);
     expect(msg.usage.cacheWrite).toBe(10);
     expect(msg.usage.reasoning).toBe(3);
-    const qoderUsage = msg.usage as typeof msg.usage & {
-      credits?: number;
-      original_credits?: number;
-      billable?: boolean;
-    };
+    const qoderUsage = msg.usage as QoderUsage;
     expect(qoderUsage.credits).toBe(2.75);
     expect(qoderUsage.original_credits).toBe(3.5);
     expect(qoderUsage.billable).toBe(true);
+    // Billable requests are charged their nominal Credits; the provider is
+    // recorded so the session footer can split Global/CN totals.
+    expect(qoderUsage.charged_credits).toBe(2.75);
+    expect(qoderUsage.qoder_provider).toBe("qoder");
+    expect(qoderUsage.usd_equivalent).toBeCloseTo((2.75 * 20) / 1500, 12);
+    expect(msg.usage.cost.total).toBe(0);
   });
 
   it("does not invent zero Credits when usage omits Qoder billing fields", async () => {
@@ -1130,5 +1164,127 @@ describe("streamQoder", () => {
       { type: "toolCall", id: "native_1", name: "search", arguments: { q: "x" } },
     ]);
     expect(done.message.stopReason).toBe("toolUse");
+  });
+
+  it("sends full disable signals when thinking is off", async () => {
+    globalThis.fetch = mockFetch(SUCCESS_SSE);
+    const offOptions = { apiKey: "fake", reasoning: "off" } as unknown as Parameters<typeof streamQoder>[2];
+    await consume(streamQoder(makeModel("qoder", "Ultimate"), makeContext(), offOptions));
+
+    const body = decodeQoderBody(vi.mocked(globalThis.fetch).mock.calls[0][1]);
+    const parameters = body.parameters as Record<string, unknown>;
+    expect(parameters.enable_thinking).toBe(false);
+    expect(parameters.reasoning_effort).toBe("none");
+    expect(body.model_config).toMatchObject({ is_reasoning: false });
+    expect(body.chat_context).toMatchObject({ extra: { modelConfig: { is_reasoning: false } } });
+  });
+
+  it("honors the host's disableReasoning flag as off", async () => {
+    globalThis.fetch = mockFetch(SUCCESS_SSE);
+    const offOptions = { apiKey: "fake", disableReasoning: true } as unknown as Parameters<typeof streamQoder>[2];
+    await consume(streamQoder(makeModel("qoder", "Ultimate"), makeContext(), offOptions));
+
+    const body = decodeQoderBody(vi.mocked(globalThis.fetch).mock.calls[0][1]);
+    const parameters = body.parameters as Record<string, unknown>;
+    expect(parameters.enable_thinking).toBe(false);
+    expect(parameters.reasoning_effort).toBe("none");
+    expect(body.model_config).toMatchObject({ is_reasoning: false });
+  });
+
+  it("disables thinking when reasoning is omitted (pi's off signal)", async () => {
+    globalThis.fetch = mockFetch(SUCCESS_SSE);
+    await consume(streamQoder(makeModel("qoder", "Ultimate"), makeContext(), { apiKey: "fake" }));
+
+    const body = decodeQoderBody(vi.mocked(globalThis.fetch).mock.calls[0][1]);
+    const parameters = body.parameters as Record<string, unknown>;
+    expect(parameters.enable_thinking).toBe(false);
+    expect(parameters.reasoning_effort).toBe("none");
+    expect(body.model_config).toMatchObject({ is_reasoning: false });
+  });
+
+  it("sends reasoning_effort none when the catalog advertises a disabled branch", async () => {
+    const path = seedModelCache({
+      Ultimate: {
+        key: "ultimate",
+        display_name: "Ultimate",
+        is_reasoning: true,
+        thinking_config: { disabled: { description: "Disable thinking" }, enabled: { efforts: { high: {} } } },
+      },
+    });
+    try {
+      globalThis.fetch = mockFetch(SUCCESS_SSE);
+      const offOptions = { apiKey: "fake", reasoning: "off" } as unknown as Parameters<typeof streamQoder>[2];
+      await consume(streamQoder(makeModel("qoder", "Ultimate"), makeContext(), offOptions));
+
+      const body = decodeQoderBody(vi.mocked(globalThis.fetch).mock.calls[0][1]);
+      const parameters = body.parameters as Record<string, unknown>;
+      expect(parameters.enable_thinking).toBe(false);
+      expect(parameters.reasoning_effort).toBe("none");
+      expect(body.model_config).toMatchObject({ is_reasoning: false });
+    } finally {
+      unseedModelCache(path);
+    }
+  });
+
+  it("omits reasoning_effort none when the catalog shows no disabled branch", async () => {
+    const path = seedModelCache({
+      Sonus: {
+        key: "smodel",
+        display_name: "Sonus",
+        is_reasoning: true,
+        thinking_config: { enabled: { efforts: { high: {} } } },
+      },
+    });
+    try {
+      globalThis.fetch = mockFetch(SUCCESS_SSE);
+      const offOptions = { apiKey: "fake", reasoning: "off" } as unknown as Parameters<typeof streamQoder>[2];
+      await consume(streamQoder(makeModel("qoder", "Sonus"), makeContext(), offOptions));
+
+      const body = decodeQoderBody(vi.mocked(globalThis.fetch).mock.calls[0][1]);
+      const parameters = body.parameters as Record<string, unknown>;
+      // Upstreams without a disabled branch (e.g. Sonus) reject
+      // reasoning_effort "none" with a 400; the effort signal must be omitted
+      // while the other disable signals still go out.
+      expect(parameters.enable_thinking).toBe(false);
+      expect(parameters.reasoning_effort).toBeUndefined();
+      expect(body.model_config).toMatchObject({ is_reasoning: false });
+      expect(body.chat_context).toMatchObject({ extra: { modelConfig: { is_reasoning: false } } });
+    } finally {
+      unseedModelCache(path);
+    }
+  });
+
+  it("reports a degenerate turn instead of a silent stop", async () => {
+    // The gateway failed to parse the model's tool call and leaked its DSML
+    // markup into reasoning_content: the turn carries no text and no tool call,
+    // and finish_reason is still "stop". Reading that as a finished task ended
+    // the agent turn with nothing to show and nothing to retry.
+    const sse =
+      sseEnvelope(chunk({ reasoning_content: "Let me look.</invoke>\n</invoke>\n</invoke>" })) +
+      sseEnvelope(finishChunk("stop")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake", reasoning: "high" }));
+    const error = events.find((event) => event.type === "error") as { error: AssistantMessage };
+    expect(error, "expected an error event").toBeDefined();
+    expect(error.error.errorMessage).toMatch(/degenerate model output/);
+    expect(events.find((event) => event.type === "done")).toBeUndefined();
+  });
+
+  it("keeps a normal turn and strips the residue from its thinking", async () => {
+    const sse =
+      sseEnvelope(chunk({ reasoning_content: "thinking</invoke>\n</invoke>" })) +
+      sseEnvelope(chunk({ content: "the answer" })) +
+      sseEnvelope(finishChunk("stop")) +
+      DONE_SSE;
+    globalThis.fetch = mockFetch(sse);
+
+    const events = await consume(streamQoder(makeModel(), makeContext(), { apiKey: "fake", reasoning: "high" }));
+    const done = events.find((event) => event.type === "done") as { message: AssistantMessage };
+    expect(done, "expected a done event").toBeDefined();
+    const thinking = done.message.content.find((block) => block.type === "thinking") as { thinking: string };
+    expect(thinking.thinking).toBe("thinking\n");
+    expect(done.message.content.find((block) => block.type === "text")).toMatchObject({ text: "the answer" });
   });
 });
