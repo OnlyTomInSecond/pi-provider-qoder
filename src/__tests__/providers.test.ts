@@ -86,7 +86,7 @@ describe("provider region binding", () => {
 });
 
 describe("model labels", () => {
-  it("only adds a multiplier hint, never a second copy of the model name", async () => {
+  it("keeps the catalog display name so the picker can show it", async () => {
     for (const name of patEnvNames) delete process.env[name];
     const providers = new Map<string, Record<string, unknown>>();
     const pi = {
@@ -99,15 +99,16 @@ describe("model labels", () => {
     const { default: registerProviders } = await import("../index.js");
     await registerProviders(pi as never);
 
-    // pi's /model picker renders "id (name)" whenever `name` has words the id
-    // does not, so the name may only carry the multiplier hint. Anything else
-    // makes every row repeat the model name.
+    // pi renders `model.name` as the secondary row text AND as the picker's
+    // "Model Name" detail line, so the name must be the real catalog display
+    // name rather than a Credit-multiplier hint.
     for (const providerID of ["qoder", "qoder-cn"]) {
       const models = (providers.get(providerID)?.models ?? []) as Array<{ id: string; name: string }>;
       expect(models.length).toBeGreaterThan(0);
       for (const model of models) {
-        expect(model.name === model.id || /^×[0-9.]+$/.test(model.name)).toBe(true);
-        expect(model.name.startsWith(model.id) && model.name !== model.id).toBe(false);
+        expect(model.name).not.toMatch(/^×[0-9.]+$/);
+        // The id is the display name with whitespace stripped.
+        expect(model.name.replace(/\s+/g, "")).toBe(model.id);
       }
     }
   });

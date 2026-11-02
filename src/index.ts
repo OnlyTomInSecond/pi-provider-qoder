@@ -7,7 +7,7 @@ import {
   refreshQoderTokenForMode,
 } from "./auth/oauth.js";
 import { fetchQoderUsageForMode } from "./auth/usage.js";
-import { getCachedModels, isCacheStale, priceFactorHint, updateQoderModelsCache } from "./catalog.js";
+import { getCachedModels, isCacheStale, updateQoderModelsCache } from "./catalog.js";
 import { registerQoderCreditDisplay } from "./credit-display.js";
 import { debugLog } from "./debug.js";
 import { streamQoder } from "./protocol/stream.js";
@@ -45,14 +45,12 @@ async function registerQoderApi(): Promise<void> {
 
 function modelsForProvider(mode: QoderMode): QoderProviderModel[] {
   // getCachedModels already falls back to the static catalog and stamps
-  // provider/baseUrl. pi's picker renders "<id> (<name>)" only when `name` has
-  // words the id does not, so the name carries just the Credit-multiplier hint
-  // (e.g. "Cantus (×3.2)") instead of a second copy of the model name. Plain
-  // models keep name === id and therefore show no parenthetical at all.
-  return getCachedModels(mode).map((model) => ({
-    ...model,
-    name: priceFactorHint(model.priceFactor) ?? model.id,
-  }));
+  // provider/baseUrl. Keep the catalog display name untouched: pi renders
+  // `model.name` both as the optional row suffix and as the picker's
+  // "Model Name" detail line, so replacing it with a Credit-multiplier hint hid
+  // the model name from that line. The multiplier stays available as
+  // `priceFactor` metadata instead.
+  return getCachedModels(mode);
 }
 
 function createQoderOAuth(mode: QoderMode): QoderOAuth {
