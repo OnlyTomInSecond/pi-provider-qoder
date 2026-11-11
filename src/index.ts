@@ -45,12 +45,13 @@ async function registerQoderApi(): Promise<void> {
 
 function modelsForProvider(mode: QoderMode): QoderProviderModel[] {
   // getCachedModels already falls back to the static catalog and stamps
-  // provider/baseUrl. Keep the catalog display name untouched: pi renders
-  // `model.name` both as the optional row suffix and as the picker's
-  // "Model Name" detail line, so replacing it with a Credit-multiplier hint hid
-  // the model name from that line. The multiplier stays available as
-  // `priceFactor` metadata instead.
-  return getCachedModels(mode);
+  // provider/baseUrl. pi's /model picker renders `name` after the id and in
+  // the "Model Name" detail line, so keep the display name and append the
+  // relative Credit multiplier when the live catalog reports one. Models
+  // without a price factor keep name === id and show no suffix.
+  return getCachedModels(mode).map((model) =>
+    model.priceFactor === undefined ? model : { ...model, name: `${model.name} · ×${model.priceFactor}` },
+  );
 }
 
 function createQoderOAuth(mode: QoderMode): QoderOAuth {

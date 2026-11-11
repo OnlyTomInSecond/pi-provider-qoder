@@ -99,9 +99,9 @@ describe("model labels", () => {
     const { default: registerProviders } = await import("../index.js");
     await registerProviders(pi as never);
 
-    // pi renders `model.name` as the secondary row text AND as the picker's
-    // "Model Name" detail line, so the name must be the real catalog display
-    // name rather than a Credit-multiplier hint.
+    // The static fallback has no price factor, so pi renders `model.name` as the
+    // secondary row text and the "Model Name" detail line as the unchanged
+    // catalog display name (a live catalog appends " · ×N" to that name).
     for (const providerID of ["qoder", "qoder-cn"]) {
       const models = (providers.get(providerID)?.models ?? []) as Array<{ id: string; name: string }>;
       expect(models.length).toBeGreaterThan(0);
