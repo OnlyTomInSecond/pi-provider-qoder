@@ -65,7 +65,17 @@ Authentication, catalog and quota requests have a 15-second deadline covering he
 Credentials are managed by the host (pi uses `~/.pi/agent/`, or `PI_CODING_AGENT_DIR`; OMP uses its own store). Identity lookups are cached only in memory and never overwrite credentials:
 
 - `auth.json` — the exchanged credentials (per provider), plus the resolved user identity (`userID`/`email`/`name`/`machineID`).
-- The machine id used for COSY headers is read from `~/.qoder/.auth/machine_id` or, if absent, `~/.pi/agent/qoder-machine-id` (created if missing).
+- The machine id used for COSY headers is read from `~/.qoder/.auth/machine_id` or, if absent, `~/.pi/agent/qoder/qoder-machine-id` (created if missing).
+
+### Qoder state directory
+
+Everything the plugin caches for itself lives in a dedicated `qoder/` subdirectory of the pi agent dir — `~/.pi/agent/qoder/` by default, or `$PI_CODING_AGENT_DIR/qoder/` when that is set:
+
+- `qoder-machine-id` — the COSY client machine id
+- `qoder-models-cache.json` / `qoder-cn-models-cache.json` — the per-region model catalogs
+- `qoder-cosy-version-cache.json` — the last resolved Qoder CLI version
+
+The directory is recreated on demand, so deleting it is safe. Files written by older versions directly into the agent dir are migrated into it on first use.
 
 Qoder credits are billed per account; only the region you log into is affected.
 
@@ -75,8 +85,8 @@ After login, `/model` (or `pi --list-models`) lists what that region offers.
 
 **Catalog source.** At startup and on each new session the provider checks its model cache. If it is missing, older than one hour, or was fetched for a different account it re-fetches the authenticated region catalog from `/model/list` and writes a fresh copy to:
 
-- `~/.pi/agent/qoder-models-cache.json` (global)
-- `~/.pi/agent/qoder-cn-models-cache.json` (China)
+- `~/.pi/agent/qoder/qoder-models-cache.json` (global)
+- `~/.pi/agent/qoder/qoder-cn-models-cache.json` (China)
 
 **Fallback catalog.** When the live catalog is unavailable, an explicit static catalog is used so models work offline. IDs in the fallback are also used as seeds until a live catalog arrives.
 

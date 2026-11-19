@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -10,7 +10,8 @@ import {
   refreshGatewayCosyVersion,
 } from "../cosy-version.js";
 
-const cachePath = join(process.env.HOME as string, ".pi", "agent", "qoder-cosy-version-cache.json");
+const cachePath = join(process.env.HOME as string, ".pi", "agent", "qoder", "qoder-cosy-version-cache.json");
+mkdirSync(join(process.env.HOME as string, ".pi", "agent", "qoder"), { recursive: true });
 
 function seedCache(data: unknown): void {
   writeFileSync(cachePath, JSON.stringify(data), "utf-8");

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { getQoderStatePath } from "./home.js";
 
 /**
  * Dynamic gateway COSY client identity.
@@ -33,14 +33,8 @@ interface CliRelease {
   prerelease?: unknown;
 }
 
-function getHomeDir(): string {
-  // Prefer process.env.HOME so vitest setup can isolate caches (same
-  // pattern as catalog.ts).
-  return process.env.HOME || process.env.USERPROFILE || homedir();
-}
-
 function getCosyVersionCachePath(): string {
-  return join(getHomeDir(), ".pi", "agent", CACHE_FILE);
+  return getQoderStatePath(CACHE_FILE);
 }
 
 /** In-memory cache keyed by absolute cache path (HOME-safe across tests). */

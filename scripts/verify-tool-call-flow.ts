@@ -265,9 +265,11 @@ try {
   report.loadedBundleSha256 = hash(path.join(loadRoot, "dist/index.js"));
   assert.equal(report.loadedBundleSha256, report.bundleSha256);
   // Fresh synthetic metadata suppresses startup discovery without mocking the factory or catalog reader.
+  const stateDir = path.join(process.env.PI_CODING_AGENT_DIR!, "qoder");
+  fs.mkdirSync(stateDir, { recursive: true });
   for (const name of ["qoder-models-cache.json", "qoder-cn-models-cache.json"]) {
     fs.writeFileSync(
-      path.join(process.env.PI_CODING_AGENT_DIR!, name),
+      path.join(stateDir, name),
       JSON.stringify({
         updatedAt: Date.now(),
         models: [],

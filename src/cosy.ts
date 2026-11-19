@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { BUNDLED_GATEWAY_COSY_VERSION, getGatewayCosyVersion } from "./cosy-version.js";
 import { debugLog } from "./debug.js";
-import { getHomeDir } from "./home.js";
+import { getHomeDir, getQoderStatePath } from "./home.js";
 
 const qoderRSAPublicKey = `-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDA8iMH5c02LilrsERw9t6Pv5Nc
@@ -116,7 +116,7 @@ export function getMachineId(): string {
   const home = getHomeDir();
   if (machineIdMem && machineIdMem.home === home) return machineIdMem.id;
 
-  const paths = [join(home, ".qoder", ".auth", "machine_id"), join(home, ".pi", "agent", "qoder-machine-id")];
+  const paths = [join(home, ".qoder", ".auth", "machine_id"), getQoderStatePath("qoder-machine-id")];
   for (const p of paths) {
     if (existsSync(p)) {
       try {

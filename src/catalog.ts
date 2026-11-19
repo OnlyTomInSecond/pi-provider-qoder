@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { buildAuthHeaders } from "./cosy.js";
 import { isGatewayCosyVersionRefreshDue, refreshGatewayCosyVersion } from "./cosy-version.js";
 import { debugLog } from "./debug.js";
-import { getHomeDir } from "./home.js";
+import { getQoderStatePath } from "./home.js";
 import { fetchQoderJson } from "./http.js";
 import { parseQoderPriceFactor } from "./protocol/usage.js";
 import { getQoderBaseUrl, getQoderModelListURL, getQoderRegionConfig, type QoderMode } from "./region.js";
@@ -91,7 +91,7 @@ export interface QoderModelDef {
 }
 
 function getQoderCachePath(mode: QoderMode): string {
-  return join(getHomeDir(), ".pi", "agent", getQoderRegionConfig(mode).modelCacheFile);
+  return getQoderStatePath(getQoderRegionConfig(mode).modelCacheFile);
 }
 
 interface ParsedModelCache {

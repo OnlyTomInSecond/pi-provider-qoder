@@ -69,7 +69,7 @@ describe("COSY client identity", () => {
 
     // The resolved id matches what was persisted under ~/.pi/agent.
     const persisted = readFileSync(
-      join(process.env.HOME || process.env.USERPROFILE || homedir(), ".pi", "agent", "qoder-machine-id"),
+      join(process.env.HOME || process.env.USERPROFILE || homedir(), ".pi", "agent", "qoder", "qoder-machine-id"),
       "utf8",
     ).trim();
     expect(persisted).toBe(first);

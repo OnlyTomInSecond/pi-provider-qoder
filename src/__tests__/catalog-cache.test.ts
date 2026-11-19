@@ -17,14 +17,14 @@ function testHome(): string {
 }
 
 const CACHE_PATHS = {
-  global: join(testHome(), ".pi", "agent", "qoder-models-cache.json"),
-  cn: join(testHome(), ".pi", "agent", "qoder-cn-models-cache.json"),
+  global: join(testHome(), ".pi", "agent", "qoder", "qoder-models-cache.json"),
+  cn: join(testHome(), ".pi", "agent", "qoder", "qoder-cn-models-cache.json"),
 };
 let originalCaches: Record<keyof typeof CACHE_PATHS, string | undefined>;
 
 // Throttle the dynamic COSY-version refresh: these tests stub global fetch for
 // the catalog and must not spend it on the (daily) releases check.
-const COSY_CACHE_PATH = join(testHome(), ".pi", "agent", "qoder-cosy-version-cache.json");
+const COSY_CACHE_PATH = join(testHome(), ".pi", "agent", "qoder", "qoder-cosy-version-cache.json");
 
 beforeEach(() => {
   clearQoderModelsMemCache();
@@ -53,7 +53,7 @@ afterEach(() => {
 
 describe("Qoder model cache", () => {
   it("refreshes the COSY version before signing the catalog request", async () => {
-    const cosyCachePath = join(testHome(), ".pi", "agent", "qoder-cosy-version-cache.json");
+    const cosyCachePath = join(testHome(), ".pi", "agent", "qoder", "qoder-cosy-version-cache.json");
     rmSync(cosyCachePath, { force: true });
     clearCosyVersionMemCache();
 

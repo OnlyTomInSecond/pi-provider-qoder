@@ -1,5 +1,5 @@
-import { rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type {
   Api,
   AssistantMessage,
@@ -140,7 +140,8 @@ function decodeQoderBody(init: RequestInit | undefined): Record<string, unknown>
 }
 
 function seedModelCache(configs: Record<string, unknown>): string {
-  const path = join(process.env.HOME as string, ".pi", "agent", "qoder-models-cache.json");
+  const path = join(process.env.HOME as string, ".pi", "agent", "qoder", "qoder-models-cache.json");
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify({ models: [], configs, updatedAt: Date.now() }));
   clearQoderModelsMemCache();
   return path;
