@@ -201,13 +201,59 @@ describe("transformMessagesForQoder", () => {
         ],
       },
     ] as unknown as Message[];
-    const result = transformMessagesForQoder(msgs);
+    const result = transformMessagesForQoder(msgs, "all");
     // Prior reasoning goes out as the top-level reasoning_content field (like
     // the official qodercli), never inlined as <thinking> tags in content.
     expect(result[0].content).toBe("answer");
     expect(result[0].content).not.toContain("<thinking>");
     expect(result[0]).toMatchObject({ reasoning_content: "let me think" });
     expect(JSON.stringify(result)).not.toContain("<thinking>");
+  });
+
+  it("drops prior reasoning by default (cost-saving)", () => {
+    const msgs = [
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "let me think" },
+          { type: "text", text: "answer" },
+        ],
+      },
+    ] as unknown as Message[];
+    const result = transformMessagesForQoder(msgs);
+    expect(result[0]).toEqual({ role: "assistant", content: "answer" });
+    expect(JSON.stringify(result)).not.toContain("let me think");
+  });
+
+  it("keeps only the newest assistant reasoning with replay=last", () => {
+    const msgs = [
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "old thought" },
+          { type: "text", text: "first" },
+        ],
+      },
+      { role: "user", content: "next" },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "new thought" },
+          { type: "text", text: "second" },
+        ],
+      },
+    ] as unknown as Message[];
+    const result = transformMessagesForQoder(msgs, "last");
+    expect(result[0]).not.toHaveProperty("reasoning_content");
+    expect(result[2]).toMatchObject({ reasoning_content: "new thought" });
+  });
+
+  it("keeps a reasoning-only turn non-null even when reasoning is dropped", () => {
+    const msgs = [{ role: "assistant", content: [{ type: "thinking", thinking: "hidden" }] }] as unknown as Message[];
+    const result = transformMessagesForQoder(msgs, "none");
+    // The gateway drops null-content assistant turns, which would orphan the
+    // tool results that follow.
+    expect(result[0]).toEqual({ role: "assistant", content: " " });
   });
 
   it("omits reasoning_content when the assistant turn has no thinking", () => {
@@ -229,7 +275,7 @@ describe("transformMessagesForQoder", () => {
       },
     ] as unknown as Message[];
 
-    const result = transformMessagesForQoder(msgs);
+    const result = transformMessagesForQoder(msgs, "all");
     expect(result[0].content).toBe(" ");
     expect(result[0]).toMatchObject({ reasoning_content: "I should check the details." });
   });
@@ -247,7 +293,7 @@ describe("transformMessagesForQoder", () => {
         ],
       },
     ] as unknown as Message[];
-    const result = transformMessagesForQoder(msgs);
+    const result = transformMessagesForQoder(msgs, "all");
     expect(result[0].content).toContain("answer");
     const reasoningContent = (result[0] as { reasoning_content?: string }).reasoning_content ?? "";
     expect(reasoningContent).toContain("let me think");

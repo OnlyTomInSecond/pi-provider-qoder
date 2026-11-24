@@ -307,7 +307,7 @@ describe("Qoder model cache", () => {
     expect(getCachedModels("global").map((model) => model.id)).toEqual(["Auto", "Lite"]);
   });
 
-  it("records a 1M context window when the catalog omits context_config", async () => {
+  it("uses the advertised max_input_tokens when the catalog omits context_config", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -322,10 +322,10 @@ describe("Qoder model cache", () => {
     await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
 
     const cache = JSON.parse(readFileSync(CACHE_PATHS.global, "utf8"));
-    expect(cache.models[0].contextWindow).toBe(1_000_000);
+    expect(cache.models[0].contextWindow).toBe(180000);
   });
 
-  it("records the advertised context_config max, even when it is below 1M", async () => {
+  it("records the catalog's default context tier, not the largest one", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -337,7 +337,11 @@ describe("Qoder model cache", () => {
                 key: "gm51model",
                 enable: true,
                 display_name: "GLM 5.2",
-                context_config: { default: { token_count: 200000, is_default: true } },
+                context_config: {
+                  "200K": { token_count: 200000, is_default: true },
+                  "400K": { token_count: 400000 },
+                  "1M": { token_count: 1000000 },
+                },
               },
             ],
           }),
@@ -350,7 +354,7 @@ describe("Qoder model cache", () => {
     expect(cache.models[0].contextWindow).toBe(200000);
   });
 
-  it("resolves the largest context option as default through getCachedModelConfig", async () => {
+  it("leaves the published is_default tier untouched for the gateway", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -374,10 +378,39 @@ describe("Qoder model cache", () => {
 
     await updateQoderModelsCache("access-token", "user-id", "Test User", "test@example.com", "global");
 
-    // The transform is memoized on the config index; assert it still applies.
+    // The request builder forwards model_config verbatim, so rewriting
+    // is_default here would opt every request into the 400K tier.
     const config = getCachedModelConfig("GLM5.2", "global");
-    expect(config?.context_config?.large?.is_default).toBe(true);
-    expect(config?.context_config?.small?.is_default).toBe(false);
+    expect(config?.context_config?.small?.is_default).toBe(true);
+    expect(config?.context_config?.large?.is_default).toBe(false);
+  });
+
+  it("recomputes the money knobs for a cache written by an older release", async () => {
+    writeFileSync(
+      CACHE_PATHS.global,
+      JSON.stringify({
+        updatedAt: Date.now(),
+        userID: "user-id",
+        models: [{ id: "GLM-5.4", name: "GLM-5.4", contextWindow: 1000000, maxTokens: 131072 }],
+        configs: {
+          "GLM-5.4": {
+            key: "gmodel_latest",
+            enable: true,
+            display_name: "GLM-5.4",
+            context_config: {
+              "200K": { token_count: 200000, is_default: true },
+              "1M": { token_count: 1000000 },
+            },
+          },
+        },
+      }),
+      "utf8",
+    );
+    clearQoderModelsMemCache();
+
+    const model = getCachedModels("global")[0];
+    expect(model.contextWindow).toBe(200000);
+    expect(model.maxTokens).toBe(32768);
   });
 
   it("exposes the catalog price_factor as model metadata", async () => {

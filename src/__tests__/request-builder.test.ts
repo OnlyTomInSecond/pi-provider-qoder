@@ -56,7 +56,60 @@ describe("buildQoderChatRequest", () => {
     // No catalog signal either way: qodercli also sends reasoning_effort
     // "none" to switch the gateway off the reasoning path.
     expect(parameters.reasoning_effort).toBe("none");
-    expect(parameters.max_tokens).toBe(131072);
+    expect(parameters.max_tokens).toBe(32768);
+  });
+
+  it("raises the output cap through QODER_MAX_OUTPUT_TOKENS", () => {
+    const model = { ...lite, maxTokens: 131072 } as Model<Api>;
+    const request = build({ env: { QODER_MAX_OUTPUT_TOKENS: "65536" } }, model);
+    expect((request.body.parameters as Record<string, unknown>).max_tokens).toBe(65536);
+  });
+
+  it("ignores an out-of-range QODER_MAX_OUTPUT_TOKENS", () => {
+    for (const value of ["0", "-1", "200000", "nope"]) {
+      const request = build({ env: { QODER_MAX_OUTPUT_TOKENS: value } });
+      expect((request.body.parameters as Record<string, unknown>).max_tokens).toBe(32768);
+    }
+  });
+
+  it("does not replay prior reasoning by default", () => {
+    const context = normalizeContext({
+      systemPrompt: "",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private plan" },
+            { type: "text", text: "done" },
+          ],
+        },
+        { role: "user", content: "again" },
+      ],
+      tools: [],
+    } as unknown as Context);
+    const request = build(undefined, lite, { key: "lite" }, context);
+    expect(JSON.stringify(request.body.messages)).not.toContain("private plan");
+  });
+
+  it("replays prior reasoning when QODER_REPLAY_REASONING=all", () => {
+    const context = normalizeContext({
+      systemPrompt: "",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private plan" },
+            { type: "text", text: "done" },
+          ],
+        },
+        { role: "user", content: "again" },
+      ],
+      tools: [],
+    } as unknown as Context);
+    const request = build({ env: { QODER_REPLAY_REASONING: "all" } }, lite, { key: "lite" }, context);
+    expect(JSON.stringify(request.body.messages)).toContain("private plan");
   });
 
   it("maps an advertised effort level to reasoning_effort", () => {
@@ -76,8 +129,8 @@ describe("buildQoderChatRequest", () => {
   });
 
   it("clamps max_tokens to the caller's limit", () => {
-    const request = build({ maxTokens: 40_000 });
-    expect((request.body.parameters as Record<string, unknown>).max_tokens).toBe(40_000);
+    const request = build({ maxTokens: 16_000 });
+    expect((request.body.parameters as Record<string, unknown>).max_tokens).toBe(16_000);
   });
 
   it("rejects a non-positive max_tokens", () => {

@@ -12,6 +12,7 @@ import { registerQoderCreditDisplay } from "./credit-display.js";
 import { debugLog } from "./debug.js";
 import { streamQoder } from "./protocol/stream.js";
 import { getQoderBaseUrl, getQoderRegionConfig, QODER_MODES, type QoderMode } from "./region.js";
+import { registerQoderSettingsUi } from "./settings-ui.js";
 
 // Stock pi never reads a `fetchUsage` reference off the oauth config: it is
 // absent from pi-coding-agent 0.75.5 through 1.4.0. The hook is only meaningful
@@ -171,4 +172,9 @@ export default async function (pi: ExtensionAPI) {
 
   for (const mode of QODER_MODES) registerQoderProvider(pi, mode);
   registerQoderCreditDisplay(pi);
+  // Re-registering a provider after the user edits `/qoder-settings` refreshes
+  // the model metadata (context window / max output) without a `/reload`.
+  registerQoderSettingsUi(pi, () => {
+    for (const mode of QODER_MODES) registerQoderProvider(pi, mode);
+  });
 }

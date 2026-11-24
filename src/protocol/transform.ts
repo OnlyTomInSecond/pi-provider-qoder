@@ -8,6 +8,7 @@ import type {
   ToolCall,
   ToolResultMessage,
 } from "@earendil-works/pi-ai";
+import type { ReasoningReplay } from "../qoder-settings.js";
 import { stripDsmlResidue } from "./thinking.js";
 import { createQoderToolCallIdMapper } from "./tool-call-id.js";
 
@@ -89,7 +90,21 @@ export function transformTools(tools: Tool[]): QoderTool[] {
   }));
 }
 
-export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
+/**
+ * Map pi conversation history onto Qoder's OpenAI-shaped messages.
+ *
+ * `replayReasoning` decides how much prior assistant thinking is sent back:
+ * - `none` (default): drop it. Each replayed thinking token is billed again on
+ *   every following round; session reviews showed 45-65% of the prompt tokens
+ *   in reasoning-heavy sessions were old thinking.
+ * - `last`: keep only the most recent assistant turn's reasoning, which is the
+ *   one belonging to the still-open tool round.
+ * - `all`: qodercli-compatible behavior, replay everything.
+ */
+export function transformMessagesForQoder(
+  messages: Message[],
+  replayReasoning: ReasoningReplay = "none",
+): QoderMessage[] {
   const normalizedMessages: QoderMessage[] = [];
 
   // Qoder rejects tool call IDs outside `^[a-zA-Z0-9_-]{1,64}$`; pi's OpenAI
@@ -126,6 +141,15 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
       if (block.type === "toolCall" && (block as ToolCall).id) {
         destination.add((block as ToolCall).id);
       }
+    }
+  }
+
+  // Index of the final assistant turn, for `replayReasoning: "last"`.
+  let lastAssistantIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") {
+      lastAssistantIndex = i;
+      break;
     }
   }
 
@@ -212,7 +236,11 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
         role: "assistant",
         content: content || (toolCalls.length > 0 || reasoningContent ? " " : null),
       };
-      if (reasoningContent) {
+      // Reasoning is replayed only when the policy allows it. `reasoningContent`
+      // is still computed above so the placeholder decision does not change
+      // when replay is off.
+      const keepReasoning = replayReasoning === "all" || (replayReasoning === "last" && i === lastAssistantIndex);
+      if (reasoningContent && keepReasoning) {
         mapped.reasoning_content = reasoningContent;
       }
       if (toolCalls.length > 0) {

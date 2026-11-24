@@ -43,14 +43,14 @@ describe("staticModels", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("uses a 1M context window for models confirmed to support it", () => {
-    // Global lite was live-tested through 1,000K tokens (issue #13). auto,
-    // efficient, and gm51model share the same Qoder 1M catalog family.
+  it("keeps the conservative 200K default for static entries", () => {
+    // The 1M figure is a catalog option, not a default: pi would only compact
+    // near 1M tokens and every intermediate request would bill for that prompt.
     for (const key of ["auto", "efficient", "lite", "gm51model"]) {
       const model = staticModels.find((m) => m.upstreamKey === key);
       expect(model, key).toBeDefined();
       expect(model?.contextWindow).toBe(DEFAULT_CONTEXT_WINDOW);
-      expect(model?.contextWindow).toBe(1_000_000);
+      expect(model?.contextWindow).toBe(200_000);
     }
   });
 
@@ -122,7 +122,19 @@ describe("staticCnModels", () => {
 });
 
 describe("contextWindowFromCatalog", () => {
-  it("uses the largest advertised context_config token_count", () => {
+  it("uses the catalog default tier, not the largest one", () => {
+    expect(
+      contextWindowFromCatalog({
+        context_config: {
+          "200K": { token_count: 200000, is_default: true },
+          "400K": { token_count: 400000 },
+          "1M": { token_count: 1000000 },
+        },
+      }),
+    ).toBe(200000);
+  });
+
+  it("still honors a catalog that marks the largest tier as default", () => {
     expect(
       contextWindowFromCatalog({
         context_config: {
@@ -133,7 +145,15 @@ describe("contextWindowFromCatalog", () => {
     ).toBe(1000000);
   });
 
-  it("keeps an advertised 200K window instead of the 1M fallback", () => {
+  it("uses the smallest tier when none is marked as default", () => {
+    expect(
+      contextWindowFromCatalog({
+        context_config: { small: { token_count: 200000 }, large: { token_count: 1000000 } },
+      }),
+    ).toBe(200000);
+  });
+
+  it("keeps an advertised 200K window instead of a 1M fallback", () => {
     expect(
       contextWindowFromCatalog({
         context_config: { default: { token_count: 200000, is_default: true } },
@@ -141,8 +161,30 @@ describe("contextWindowFromCatalog", () => {
     ).toBe(200000);
   });
 
-  it("falls back to 1M when the catalog omits context_config", () => {
-    expect(contextWindowFromCatalog({ key: "lite", max_input_tokens: 180000 })).toBe(DEFAULT_CONTEXT_WINDOW);
+  it("falls back to the advertised max_input_tokens when context_config is missing", () => {
+    expect(contextWindowFromCatalog({ key: "lite", max_input_tokens: 180000 })).toBe(180000);
+  });
+
+  it("falls back to DEFAULT_CONTEXT_WINDOW when nothing is advertised", () => {
+    expect(contextWindowFromCatalog({ key: "lite" })).toBe(DEFAULT_CONTEXT_WINDOW);
+  });
+
+  it("forces a window through QODER_CONTEXT_WINDOW, capped to the largest tier", () => {
+    const entry = {
+      context_config: { "200K": { token_count: 200000, is_default: true }, "1M": { token_count: 1000000 } },
+    };
+    expect(contextWindowFromCatalog(entry, { QODER_CONTEXT_WINDOW: "400000" })).toBe(400000);
+    expect(contextWindowFromCatalog(entry, { QODER_CONTEXT_WINDOW: "2000000" })).toBe(1000000);
+    expect(contextWindowFromCatalog(entry, { QODER_CONTEXT_WINDOW: "nope" })).toBe(200000);
+  });
+
+  it("restores the legacy largest-tier behavior through QODER_CONTEXT_MAX=1", () => {
+    expect(
+      contextWindowFromCatalog(
+        { context_config: { "200K": { token_count: 200000, is_default: true }, "1M": { token_count: 1000000 } } },
+        { QODER_CONTEXT_MAX: "1" },
+      ),
+    ).toBe(1000000);
   });
 });
 

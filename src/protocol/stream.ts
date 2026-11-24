@@ -15,10 +15,11 @@ import { getCachedModelConfig } from "../catalog.js";
 import { buildAuthHeaders, getMachineId } from "../cosy.js";
 import type { QoderProvider } from "../credits.js";
 import { readResponseText, withAbort } from "../http.js";
+import { resolveStreamDeltaIntervalMs, resolveStreamIdleTimeoutMs } from "../qoder-settings.js";
 import { getQoderChatURL, getQoderModeForProvider, getQoderRegionConfig } from "../region.js";
-import { MAX_STREAM_BUFFER_LENGTH, readNumericOption } from "../util.js";
+import { MAX_STREAM_BUFFER_LENGTH } from "../util.js";
 import { yieldToEventLoop } from "../yield.js";
-import { DELTA_FLUSH_INTERVAL_MS, DeltaCoalescer } from "./delta-coalescer.js";
+import { DeltaCoalescer } from "./delta-coalescer.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
 import { qoderEncodeBodyAsync } from "./encoding.js";
 import { parseModelBusyRejection, QoderModelBusyError, resolveModelBusyLimits, sleepWithAbort } from "./model-busy.js";
@@ -35,7 +36,6 @@ export { parseModelBusyRejection } from "./model-busy.js";
 
 const SSE_LINES_PER_YIELD = 32;
 type QoderStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
-const QODER_STREAM_IDLE_TIMEOUT_MS = 120_000;
 
 /** Longest reasoning tail kept for the degenerate-turn check (trailing markup only). */
 const RAW_REASONING_TAIL_LENGTH = 512;
@@ -98,12 +98,7 @@ export function streamQoder(
     timestamp: Date.now(),
   };
 
-  const deltaIntervalMs = readNumericOption(
-    "QODER_STREAM_DELTA_INTERVAL_MS",
-    options?.env,
-    DELTA_FLUSH_INTERVAL_MS,
-    (value) => Number.isFinite(value) && value >= 0,
-  );
+  const deltaIntervalMs = resolveStreamDeltaIntervalMs(options?.env);
   const coalescer = new DeltaCoalescer(deltaIntervalMs, (event) => stream.push(event));
   const pushEvent = (event: QoderStreamEvent): void => coalescer.push(event);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -214,12 +209,7 @@ export function streamQoder(
       const modelSource = outgoingConfig?.source || modelConfig.source || "system";
       // Resolve the (optional) idle-timeout override once per request instead of
       // re-reading process.env on every streamed chunk.
-      const idleTimeoutMs = readNumericOption(
-        "QODER_STREAM_IDLE_TIMEOUT_MS",
-        options?.env,
-        QODER_STREAM_IDLE_TIMEOUT_MS,
-        (value) => Number.isFinite(value) && value > 0,
-      );
+      const idleTimeoutMs = resolveStreamIdleTimeoutMs(options?.env);
 
       const encodeAndSign = async (): Promise<{ body: Buffer; headers: Record<string, string> }> => {
         const bodyBytes = Buffer.from(JSON.stringify(payload));

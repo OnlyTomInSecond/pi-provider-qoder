@@ -11,7 +11,8 @@ import {
   withoutInitialSystemMessage,
 } from "@earendil-works/pi-ai";
 import type { QoderIdentity } from "../auth/oauth.js";
-import { MAX_OUTPUT_TOKENS, type QoderModelEntry } from "../catalog.js";
+import type { QoderModelEntry } from "../catalog.js";
+import { resolveMaxOutputTokens, resolveReasoningReplay } from "../qoder-settings.js";
 import type { QoderMode } from "../region.js";
 import { getQoderRunIdentity } from "./run-state.js";
 import { contentToText, transformMessagesForQoder, transformTools } from "./transform.js";
@@ -84,14 +85,13 @@ export interface QoderChatRequest {
   sessionID: string;
 }
 
-/** Resolve the output cap from the upstream ceiling and any host/pi limits. */
+/** Resolve the output cap from our default and any host/pi limits. */
 function resolveMaxTokens(model: Model<Api>, options?: SimpleStreamOptions): number {
-  // Qoder's catalog exposes no per-model output cap, so we use the documented
-  // upstream ceiling (MAX_OUTPUT_TOKENS = 131072) and let pi cap it lower when
-  // the caller sets options.maxTokens (e.g. compaction at 40K). This avoids
-  // truncating reasoning chains / long generations that the 32K default would
-  // cut off.
-  let maxTokens = MAX_OUTPUT_TOKENS;
+  // Default to qodercli's 32K (QODER_MAX_OUTPUT_TOKENS raises it, up to the
+  // documented 131072 ceiling). Output tokens carry the highest per-token
+  // price, so a bigger ceiling only lets a runaway reasoning chain cost more.
+  // The model metadata and the caller can still lower it (e.g. compaction).
+  let maxTokens = resolveMaxOutputTokens(options?.env);
   for (const limit of [model.maxTokens, options?.maxTokens]) {
     if (limit === undefined) continue;
     if (!Number.isInteger(limit) || limit <= 0) throw new Error("Qoder maxTokens must be a positive integer");
@@ -192,7 +192,10 @@ export function buildQoderChatRequest(input: QoderChatRequestInput): QoderChatRe
   // to Qoder's OpenAI-shaped messages. The resolved prompt is then sent as one
   // leading system message.
   const transcriptMessages = withoutInitialSystemMessage(context.messages);
-  const normalizedMessages = transformMessagesForQoder(transcriptMessages);
+  // A timeout continuation must see the partial reasoning it is continuing;
+  // replaying it costs one request and only happens after a failed stream.
+  const replayReasoning = isResumeAttempt(options) ? "all" : resolveReasoningReplay(options?.env);
+  const normalizedMessages = transformMessagesForQoder(transcriptMessages, replayReasoning);
   // Resolve the current prompt and tool set in a single transcript pass:
   // getCurrentSystemPrompt() would re-walk the messages (and re-resolve the
   // tools internally) on top of the getCurrentTools() call below.

@@ -32,8 +32,8 @@ function liteModel(provider: "qoder" | "qoder-cn") {
     reasoning: false,
     input: ["text"] as const,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 1000000,
-    maxTokens: 131072,
+    contextWindow: 200000,
+    maxTokens: 32768,
   };
 }
 

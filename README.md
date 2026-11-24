@@ -94,9 +94,43 @@ After login, `/model` (or `pi --list-models`) lists what that region offers.
 
 **Context & output.**
 
-- Context window: taken from the **largest** context option the catalog advertises (e.g. 1M when 200K/400K/1M are offered). When the catalog omits context options, a 1M fallback is used for most models; a few models are pinned lower to what they actually advertise (e.g. Kimi 256K, and several CN models 200K).
-- Output: capped at 128K tokens (`max_tokens` 131072), which can be lowered per-request by pi (e.g. compaction).
+- Context window: the **catalog default** tier (`context_config[*].is_default`, e.g. 200K when 200K/400K/1M are offered), because Qoder bills per token actually sent and a larger window only makes pi compact later. When no tier is marked as default the smallest tier wins, then the advertised `max_input_tokens`, then a 200K fallback. The plugin no longer rewrites `is_default` in the `model_config` it forwards, so the gateway sees the tier Qoder itself publishes.
+- Output: `max_tokens` 32768 by default (qodercli's own default; its UI caps at 65536), lowerable per-request by pi (e.g. compaction). The documented upstream ceiling is 131072. Output carries the highest per-token price, so raising this is the most direct way to spend more Credits.
+- Reasoning replay: prior assistant thinking is **not** sent back by default. Replayed thinking is billed again on every following round; recorded reasoning-heavy sessions had 45–65% of their prompt tokens made of old thinking. `last` keeps only the current tool round, `all` reproduces qodercli's behavior. A timeout continuation always replays the partial reasoning it continues.
 - Cost: Qoder bills in Credits, not USD, so pi's monetary `cost` is left at zero. The relative Credit multiplier (`price_factor`) is exposed as `priceFactor` metadata on each model when the live catalog reports it, and the official per-request `credits` / `original_credits` / `billable` fields are preserved on the runtime usage object when Qoder reports them. The multiplier is also appended to the model `name` (e.g. `Qwen3.8-Max · ×1.2`), which pi renders both as the picker's secondary row text and on its "Model Name" detail line; models without a price factor keep their display name unchanged.
+
+### Credits settings (`/qoder-settings`)
+
+pi's `/settings` only edits pi's own settings; extensions expose theirs through a command. `/qoder-settings` opens a TUI menu (and also accepts non-interactive arguments):
+
+```text
+/qoder-settings
+/qoder-settings context 400000      # or: default | max (largest advertised tier)
+/qoder-settings output 65536        # max_tokens; default = 32768
+/qoder-settings reasoning none      # none (default) | last | all
+/qoder-settings stream-idle 60000   # ms without a byte before a stall; default = 120000
+/qoder-settings stream-delta 100    # delta coalescing interval; default = 50
+/qoder-settings debug on            # verbose diagnostics; default = off
+/qoder-settings show
+/qoder-settings reset
+```
+
+The menu keeps the three Credit knobs at the top and groups the streaming/diagnostic knobs under **Advanced…**. Every environment variable that is not a credential has a TUI counterpart, so a persistent setup needs no shell exports. Credentials stay out of the file: use `/login` or the PAT environment variables so secrets are not written to plaintext JSON.
+
+Values persist to `~/.pi/agent/qoder/qoder-settings.json` and apply immediately: the command re-registers the provider so pi picks up the new context window for compaction, and the request builder / stream read the same file per request. Precedence is **environment variable > settings file > plugin default**, so an env var still wins for a one-off invocation:
+
+```json
+{
+  "contextWindow": 200000,
+  "maxOutputTokens": 32768,
+  "replayReasoning": "none",
+  "streamIdleTimeoutMs": 120000,
+  "streamDeltaIntervalMs": 50,
+  "debug": false
+}
+```
+
+**Reducing Credits.** Beyond choosing a cheaper model/effort level, pi-side levers are: keep the default context tier (earlier compaction means smaller prompts), keep the 32K output cap, keep reasoning replay off, and — for long sessions — start a fresh session or `/compact` manually instead of letting one conversation grow to hundreds of thousands of tokens.
 
 ### Thinking & effort
 
@@ -110,12 +144,18 @@ The streamed response is normalized into pi thinking blocks regardless of how th
 
 ## Environment variables
 
+Every non-credential variable below can also be set persistently from `/qoder-settings`; the environment wins for a single invocation. Credential variables are intentionally not part of the settings file.
+
 | Variable | Purpose |
 | --- | --- |
 | `QODER_API_KEY`, `QODER_PERSONAL_ACCESS_TOKEN`, `QODER_PAT` | Global PAT (first non-empty wins). |
 | `QODERCN_API_KEY`, `QODERCN_PERSONAL_ACCESS_TOKEN`, `QODERCN_PAT` | China PAT (first non-empty wins). |
 | `QODER_STREAM_IDLE_TIMEOUT_MS` | Stream idle timeout override (default `120000` ms). |
 | `QODER_STREAM_DELTA_INTERVAL_MS` | Minimum gap between streamed text/thinking deltas (default `50` ms). Higher values cut UI CPU on long responses. |
+| `QODER_MAX_OUTPUT_TOKENS` | Per-request `max_tokens` (default `32768`, max `131072`). Raise it only when a task genuinely needs long generations; output is the priciest token class. |
+| `QODER_CONTEXT_WINDOW` | Force the context window pi uses for every Qoder model (capped to the largest tier the catalog advertises). |
+| `QODER_CONTEXT_MAX` | `1` restores the old behavior of using the largest advertised context tier (more compacting headroom, more Credits). |
+| `QODER_REPLAY_REASONING` | `none` (default) drops prior thinking from the prompt, `last` keeps only the current tool round, `all` replays everything (qodercli behavior, most Credits). |
 | `QODER_DEBUG` | When set, log diagnostics for best-effort failures (catalog refresh, PAT exchange fallthrough, userinfo lookup). Malformed SSE and token refresh failures are always surfaced as errors. |
 
 ## How it works (protocol notes)
