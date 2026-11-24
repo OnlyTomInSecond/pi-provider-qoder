@@ -13,16 +13,6 @@ import { getQoderBaseUrl, getQoderModelListURL, getQoderRegionConfig, type Qoder
 export const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
 /**
- * Per-request output cap defaults to the official qodercli value (32e3); see
- * `src/qoder-settings.ts` for the env/`/qoder-settings` overrides.
- *
- * Output tokens are the most expensive part of a Qoder request, and reviews of
- * recorded sessions show the median turn finishing far below 32K. A larger cap
- * only lets a runaway reasoning chain bill more.
- */
-export const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
-
-/**
  * Fallback context window when the catalog omits `context_config`.
  *
  * Matches what Qoder itself treats as the baseline prompt size. `max_input_tokens`
@@ -31,9 +21,6 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
  * bill every round for it) even for models whose catalog entry only offers 200K.
  */
 export const DEFAULT_CONTEXT_WINDOW = 200000;
-
-/** Re-exported so callers keep one import site for the credit-relevant knobs. */
-export { MAX_OUTPUT_TOKENS_LIMIT, resolveMaxOutputTokens } from "./qoder-settings.js";
 
 /** Shape of a single entry returned by the Qoder /model/list endpoint. */
 export interface QoderModelEntry {
@@ -180,15 +167,22 @@ class QoderCatalogStore {
     return index;
   }
 
-  /** Lazily built index over the static fallback catalog for this mode. */
-  staticSeeds(by: "upstreamKey" | "id"): Map<string, QoderModelDef> {
-    const index = by === "upstreamKey" ? this.staticByUpstreamKey : this.staticById;
-    if (index.size > 0) return index;
-    for (const model of this.mode === "cn" ? staticCnModels : staticModels) {
-      const key = by === "upstreamKey" ? model.upstreamKey : model.id;
-      if (key && !index.has(key)) index.set(key, model);
+  /**
+   * Static fallback catalog for this mode, indexed by upstream key and by public
+   * id. `getCachedModels` maps every cached entry back to a seed by upstream key
+   * and `getCachedModelConfig` resolves a fallback by public id; both used to run
+   * a linear `.find` per call.
+   */
+  get staticSeeds(): { byUpstreamKey: Map<string, QoderModelDef>; byId: Map<string, QoderModelDef> } {
+    if (this.staticByUpstreamKey.size === 0) {
+      for (const model of this.mode === "cn" ? staticCnModels : staticModels) {
+        if (model.upstreamKey && !this.staticByUpstreamKey.has(model.upstreamKey)) {
+          this.staticByUpstreamKey.set(model.upstreamKey, model);
+        }
+        if (!this.staticById.has(model.id)) this.staticById.set(model.id, model);
+      }
     }
-    return index;
+    return { byUpstreamKey: this.staticByUpstreamKey, byId: this.staticById };
   }
 
   /**
@@ -280,7 +274,7 @@ function makeModelDef(mode: QoderMode, fields: ModelDefFields): QoderModelDef {
     ...fields,
     // Explicit QODER_CONTEXT_WINDOW wins for static fallback entries too; live
     // entries already resolved it in contextWindowFromCatalog().
-    contextWindow: forcedContextWindow() ?? fields.contextWindow,
+    contextWindow: resolveContextWindowOverride() ?? fields.contextWindow,
   };
 }
 
@@ -467,7 +461,7 @@ export function getCachedModels(mode: QoderMode): QoderModelDef[] {
   const store = getCatalogStore(mode);
   const data = store.read();
   if (data && Array.isArray(data.models)) {
-    const staticByKey = store.staticSeeds("upstreamKey");
+    const staticByKey = store.staticSeeds.byUpstreamKey;
     const models = data.models.map((model: QoderModelDef) => {
       const config = (data.configs?.[model.id] ?? store.configs().get(model.id)) as QoderModelEntry | undefined;
       const display = config?.display_name;
@@ -477,7 +471,7 @@ export function getCachedModels(mode: QoderMode): QoderModelDef[] {
       // older release may carry the 1M window / 128K output cap, and those
       // must not keep inflating credits for the rest of the cache TTL.
       const adjusted: Partial<QoderModelDef> = { maxTokens: resolveMaxOutputTokens() };
-      const forcedWindow = forcedContextWindow();
+      const forcedWindow = resolveContextWindowOverride();
       if (config) adjusted.contextWindow = contextWindowFromCatalog(config);
       else if (forcedWindow !== undefined) adjusted.contextWindow = forcedWindow;
       const next = { ...model, ...adjusted };
@@ -497,13 +491,6 @@ export function getCachedModels(mode: QoderMode): QoderModelDef[] {
   return mode === "cn" ? staticCnModels : staticModels;
 }
 
-/**
- * Lazily built indexes over the static fallback catalogs. `getCachedModels`
- * maps every cached entry back to a seed (by upstream key) and
- * `getCachedModelConfig` resolves a fallback by public id; both used to run a
- * linear `.find` per call. The seed arrays are module constants, so the maps
- * are built once per store (see QoderCatalogStore.staticSeeds).
- */
 export function getCachedModelConfig(modelId: string, mode: QoderMode): QoderModelEntry | null {
   const store = getCatalogStore(mode);
   // O(1) lookup against the memoized displayId index (no per-request scan of the
@@ -511,7 +498,7 @@ export function getCachedModelConfig(modelId: string, mode: QoderMode): QoderMod
   const config = store.configs().get(modelId);
   if (config) return config;
 
-  const staticModel = store.staticSeeds("id").get(modelId);
+  const staticModel = store.staticSeeds.byId.get(modelId);
   if (staticModel) {
     return {
       key: staticModel.upstreamKey || modelId,
@@ -537,11 +524,6 @@ function contextTiers(entry: QoderModelEntry): Array<{ tokens: number; isDefault
   return tiers.sort((a, b) => a.tokens - b.tokens);
 }
 
-/** QODER_CONTEXT_WINDOW (env or settings file), when set to a positive finite number. */
-function forcedContextWindow(env?: Readonly<Record<string, string | undefined>>): number | undefined {
-  return resolveContextWindowOverride(env);
-}
-
 /**
  * Resolve the context window pi should use for a catalog entry.
  *
@@ -565,7 +547,7 @@ export function contextWindowFromCatalog(
   const tiers = contextTiers(entry);
   const largest = tiers[tiers.length - 1]?.tokens;
 
-  const forced = forcedContextWindow(env);
+  const forced = resolveContextWindowOverride(env);
   if (forced !== undefined) return largest !== undefined ? Math.min(forced, largest) : forced;
   if (resolvePreferMaxContext(env) && largest !== undefined) return largest;
 
