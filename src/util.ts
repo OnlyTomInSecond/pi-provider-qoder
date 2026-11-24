@@ -14,6 +14,14 @@ export function escapeRegExp(value: string): string {
 export const MAX_STREAM_BUFFER_LENGTH = 8 * 1024 * 1024;
 
 /**
+ * Yield to the event loop so a long synchronous pass (SSE line parsing, body
+ * encoding) does not monopolize Node's single thread.
+ */
+export function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
  * Read a numeric option, preferring the host-provided `env` over `process.env`.
  * Returns `fallback` when the value is unset or fails `isValid`. Centralizes the
  * "options.env overrides process.env" convention and the finite/in-range checks.

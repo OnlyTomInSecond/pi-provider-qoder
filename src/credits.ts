@@ -14,6 +14,7 @@ export interface QoderUsage extends Usage {
   usd_equivalent?: number;
 }
 
+/** A finite, non-negative number, or undefined when the value is unusable. */
 export function creditNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }

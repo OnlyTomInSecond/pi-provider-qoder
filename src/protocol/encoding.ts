@@ -1,4 +1,4 @@
-import { yieldToEventLoop } from "../yield.js";
+import { yieldToEventLoop } from "../util.js";
 
 const qoderCustomAlphabet = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
 

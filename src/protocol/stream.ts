@@ -17,8 +17,7 @@ import type { QoderProvider } from "../credits.js";
 import { readResponseText, withAbort } from "../http.js";
 import { resolveStreamDeltaIntervalMs, resolveStreamIdleTimeoutMs } from "../qoder-settings.js";
 import { getQoderChatURL, getQoderModeForProvider, getQoderRegionConfig } from "../region.js";
-import { MAX_STREAM_BUFFER_LENGTH } from "../util.js";
-import { yieldToEventLoop } from "../yield.js";
+import { MAX_STREAM_BUFFER_LENGTH, yieldToEventLoop } from "../util.js";
 import { DeltaCoalescer } from "./delta-coalescer.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
 import { qoderEncodeBodyAsync } from "./encoding.js";
@@ -474,11 +473,9 @@ export function streamQoder(
                 }
               }
             } catch (e) {
-              // A model-busy rejection is retryable; let it reach the attempt loop.
-              if (e instanceof QoderModelBusyError) throw e;
               // Skipping a broken data event could silently corrupt text or tool JSON.
-              if (e instanceof SyntaxError) throw new Error("Malformed Qoder SSE data");
-              throw e;
+              // Everything else (including a retryable busy rejection) propagates.
+              throw e instanceof SyntaxError ? new Error("Malformed Qoder SSE data") : e;
             }
           }
           if (done) break;

@@ -30,14 +30,8 @@ export function isResumeAttempt(options?: SimpleStreamOptions): boolean {
   return (options as InternalStreamOptions | undefined)?.[QODER_RESUME_ATTEMPT] === 1;
 }
 
-function stableHash(prefix: string, ...inputs: string[]): string {
-  const hash = crypto.createHash("sha256");
-  hash.update(prefix);
-  for (const input of inputs) {
-    hash.update("\0");
-    hash.update(input);
-  }
-  return hash.digest("hex").slice(0, 16);
+function stableHash(...inputs: string[]): string {
+  return crypto.createHash("sha256").update(inputs.join("\0")).digest("hex").slice(0, 16);
 }
 
 /**
