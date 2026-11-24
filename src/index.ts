@@ -92,10 +92,10 @@ function registerQoderProvider(pi: ExtensionAPI, mode: QoderMode): void {
  */
 async function refreshQoderModelsCache(mode: QoderMode, accessToken?: string): Promise<void> {
   const region = getQoderRegionConfig(mode);
-  const providerID = region.providerID;
-  const token = accessToken ?? getCachedCredentials("", providerID)?.access;
+  // An empty token means "whatever account auth.json holds" (used to discover it).
+  const creds = getCachedCredentials(accessToken ?? "", region.providerID);
+  const token = accessToken ?? creds?.access;
   if (!token) return;
-  const creds = getCachedCredentials(token, providerID);
   // Rebuild when the cache is missing, older than an hour, or was fetched for
   // a different account.
   if (!isCacheStale(mode, creds?.userID)) return;

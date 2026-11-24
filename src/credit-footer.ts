@@ -2,7 +2,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { QuotaBucket, QuotaState } from "./quota.js";
-import { collectSessionUsage, type SessionUsageTotals } from "./session-usage.js";
+import { collectSessionUsage } from "./session-usage.js";
 
 export function qoderMode(provider: string | undefined) {
   return provider === "qoder" ? "global" : provider === "qoder-cn" ? "cn" : undefined;
@@ -98,10 +98,6 @@ export function sessionCreditSummary(
   ctx: ExtensionContext,
   totals = collectSessionUsage(ctx.sessionManager.getEntries()),
 ): string[] {
-  return creditSummary(totals);
-}
-
-function creditSummary(totals: SessionUsageTotals): string[] {
   const lines: string[] = [];
   for (const [provider, total] of totals.credits) {
     const name = provider === "qoder-cn" ? "Qoder CN" : "Qoder";
@@ -158,7 +154,7 @@ export function renderCreditFooter(
     lines.push(truncateToWidth(theme.fg("dim", singleLine(model)), width));
   }
   const color = state?.status === "stale" || state?.status === "unavailable" ? "warning" : "accent";
-  for (const line of creditSummary(totals)) {
+  for (const line of sessionCreditSummary(ctx, totals)) {
     lines.push(...wrapTextWithAnsi(theme.fg(line.includes("unknown") ? "warning" : "accent", line), width));
   }
   for (const line of quotaSummary(state, ctx.model?.provider)) {

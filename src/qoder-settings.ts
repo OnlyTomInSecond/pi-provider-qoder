@@ -147,10 +147,6 @@ export function clearQoderSettingsCache(): void {
   cachedFile = undefined;
 }
 
-export interface QoderSettingsEnv {
-  env?: Readonly<Record<string, string | undefined>>;
-}
-
 /**
  * Context window override from `QODER_CONTEXT_WINDOW` or the settings file.
  * `undefined` means "use the catalog's default tier".

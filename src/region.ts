@@ -1,7 +1,6 @@
 export type QoderMode = "global" | "cn";
 
 export interface QoderRegionConfig {
-  mode: QoderMode;
   providerID: "qoder" | "qoder-cn";
   baseUrl: string;
   openApiUrl: string;
@@ -20,7 +19,6 @@ export interface QoderRegionConfig {
 
 const QODER_REGIONS: Record<QoderMode, QoderRegionConfig> = {
   global: {
-    mode: "global",
     providerID: "qoder",
     baseUrl: "https://api3.qoder.sh/",
     openApiUrl: "https://openapi.qoder.sh",
@@ -37,7 +35,6 @@ const QODER_REGIONS: Record<QoderMode, QoderRegionConfig> = {
     supportsBrowserLogin: true,
   },
   cn: {
-    mode: "cn",
     providerID: "qoder-cn",
     baseUrl: "https://gateway.qoder.com.cn/",
     openApiUrl: "https://openapi.qoder.com.cn",

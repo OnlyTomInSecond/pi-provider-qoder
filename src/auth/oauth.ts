@@ -176,18 +176,20 @@ export async function loginQoderForMode(callbacks: OAuthLoginCallbacks, mode: Qo
   // 1. Try environment variables first (PAT). A PAT (pt-...) must be exchanged
   //    for a short-lived job token before it can be used — credentialsFromPat
   //    handles the exchange + identity resolution.
+  let creds: OAuthCredentials | undefined;
   const pat = getQoderPatForMode(mode);
   if (pat) {
     try {
-      const creds = await credentialsFromPat(pat, mode, { signal: callbacks.signal });
-      const qCreds = creds as QoderCredentials;
+      creds = await credentialsFromPat(pat, mode, { signal: callbacks.signal });
       // Cache models in background without outliving a cancelled login.
-      updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode, callbacks.signal).catch(
-        (error) => debugLog("model catalog refresh after PAT exchange failed", error),
-      );
-      // The host persists credentials (auth.json in pi, agent.db in OMP).
-      if (qCreds.userID) cacheIdentity(`${providerID}:${qCreds.access}`, qCreds);
-      return creds;
+      updateQoderModelsCache(
+        creds.access,
+        (creds as QoderCredentials).userID,
+        (creds as QoderCredentials).name,
+        (creds as QoderCredentials).email,
+        mode,
+        callbacks.signal,
+      ).catch((error) => debugLog("model catalog refresh after PAT exchange failed", error));
     } catch (error) {
       callbacks.signal?.throwIfAborted();
       debugLog("environment PAT exchange failed; falling back to interactive login", error);
@@ -195,20 +197,16 @@ export async function loginQoderForMode(callbacks: OAuthLoginCallbacks, mode: Qo
   }
 
   // 2. Interactive login (CN only supports PAT prompt here; global supports device flow fallback)
-  const creds = await interactiveLogin(callbacks, mode);
-
-  // Cache models in background.
-  try {
-    const qCreds = creds as QoderCredentials;
+  creds ??= await interactiveLogin(callbacks, mode);
+  const qCreds = creds as QoderCredentials;
+  // Cache models in background (no-op when the PAT branch already did it).
+  if (!pat) {
     updateQoderModelsCache(qCreds.access, qCreds.userID, qCreds.name, qCreds.email, mode, callbacks.signal).catch(
       (error) => debugLog("model catalog refresh after login failed", error),
     );
-  } catch (error) {
-    debugLog("failed to start model catalog refresh after login", error);
   }
-
-  const identity = creds as QoderCredentials;
-  if (identity.userID) cacheIdentity(`${providerID}:${creds.access}`, identity);
+  // The host persists credentials (auth.json in pi, agent.db in OMP).
+  if (qCreds.userID) cacheIdentity(`${providerID}:${qCreds.access}`, qCreds);
   return creds;
 }
 

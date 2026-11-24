@@ -2,7 +2,7 @@ import type { Usage } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { chargedCredits, type QoderProvider, type QoderUsage } from "./credits.js";
 
-export interface SessionCreditTotals {
+interface SessionCreditTotals {
   charged: number;
   known: number;
   unknown: number;
