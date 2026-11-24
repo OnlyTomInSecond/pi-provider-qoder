@@ -1,8 +1,4 @@
-import {
-  type AssistantMessage,
-  type AssistantMessageEvent,
-  createAssistantMessageEventStream,
-} from "@earendil-works/pi-ai";
+import { type AssistantMessageEvent, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
   buildContinuationContext,
@@ -10,26 +6,7 @@ import {
   isResumableTimeout,
   relayContinuation,
 } from "../protocol/resume.js";
-
-function makeMessage(): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [],
-    api: "qoder-api",
-    provider: "qoder",
-    model: "Lite",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "pending",
-    timestamp: 0,
-  };
-}
+import { makeMessage } from "./helpers.js";
 
 function replay(events: AssistantMessageEvent[]): ReturnType<typeof createAssistantMessageEventStream> {
   const stream = createAssistantMessageEventStream();

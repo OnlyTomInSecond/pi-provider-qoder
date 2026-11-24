@@ -1,32 +1,13 @@
-import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai";
+import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { type FinishedToolCallArguments, parseFinishedArguments, ToolCallAccumulator } from "../protocol/tool-calls.js";
-
-function makeOutput(): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [],
-    api: "qoder-api" as AssistantMessage["api"],
-    provider: "qoder" as AssistantMessage["provider"],
-    model: "auto",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "pending",
-    timestamp: 0,
-  };
-}
+import { makeMessage } from "./helpers.js";
 
 const malformed = (): FinishedToolCallArguments => ({ arguments: {}, argumentsError: "Unexpected end of JSON input" });
 
 describe("ToolCallAccumulator finished arguments", () => {
   it("carries the host argumentsError on both the block and the toolcall_end event", () => {
-    const output = makeOutput();
+    const output = makeMessage();
     const events: AssistantMessageEvent[] = [];
     const toolCalls = new ToolCallAccumulator(output, (event) => events.push(event), malformed);
 
@@ -58,7 +39,7 @@ describe("ToolCallAccumulator finished arguments", () => {
   });
 
   it("omits argumentsError when the finished arguments parse cleanly", () => {
-    const output = makeOutput();
+    const output = makeMessage();
     const events: AssistantMessageEvent[] = [];
     const parse = vi.fn((value: string): FinishedToolCallArguments => ({ arguments: JSON.parse(value) }));
     const toolCalls = new ToolCallAccumulator(output, (event) => events.push(event), parse);
@@ -79,7 +60,7 @@ describe("ToolCallAccumulator finished arguments", () => {
   });
 
   it("keeps the strict fallback failing on malformed arguments when the host cannot report them", () => {
-    const output = makeOutput();
+    const output = makeMessage();
     const toolCalls = new ToolCallAccumulator(
       output,
       () => {},
@@ -97,7 +78,7 @@ describe("ToolCallAccumulator finished arguments", () => {
   });
 
   it("serializes an already-parsed argument object instead of concatenating [object Object]", () => {
-    const output = makeOutput();
+    const output = makeMessage();
     const toolCalls = new ToolCallAccumulator(output, () => {}, parseFinishedArguments);
 
     // The gateway can deliver `arguments` as a parsed value even though the
@@ -141,7 +122,7 @@ describe("parseFinishedArguments local repair fallback", () => {
 
 describe("ToolCallAccumulator identity", () => {
   it("keeps parallel calls apart when the adapter omits the index", () => {
-    const output = makeOutput();
+    const output = makeMessage();
     const toolCalls = new ToolCallAccumulator(output, () => {});
 
     toolCalls.processNativeDelta({ id: "call_a", function: { name: "read", arguments: '{"path":"a"' } });
@@ -157,7 +138,7 @@ describe("ToolCallAccumulator identity", () => {
   });
 
   it("starts a new call when a reused index carries a new explicit id", () => {
-    const output = makeOutput();
+    const output = makeMessage();
     const toolCalls = new ToolCallAccumulator(output, () => {});
 
     toolCalls.processNativeDelta({ index: 0, id: "call_a", function: { name: "read", arguments: '{"path":"a"}' } });
@@ -171,7 +152,7 @@ describe("ToolCallAccumulator identity", () => {
   });
 
   it("rejects an ambiguous argument-only continuation", () => {
-    const toolCalls = new ToolCallAccumulator(makeOutput(), () => {});
+    const toolCalls = new ToolCallAccumulator(makeMessage(), () => {});
     toolCalls.processNativeDelta({ id: "call_a", function: { name: "read", arguments: "{" } });
     toolCalls.processNativeDelta({ id: "call_b", function: { name: "read", arguments: "{" } });
     expect(() => toolCalls.processNativeDelta({ function: { arguments: "}" } })).toThrow(
@@ -180,7 +161,7 @@ describe("ToolCallAccumulator identity", () => {
   });
 
   it("rejects inconsistent names for one identity", () => {
-    const toolCalls = new ToolCallAccumulator(makeOutput(), () => {});
+    const toolCalls = new ToolCallAccumulator(makeMessage(), () => {});
     toolCalls.processNativeDelta({ index: 0, id: "call_a", function: { name: "read", arguments: "{" } });
     expect(() => toolCalls.processNativeDelta({ index: 0, id: "call_a", function: { name: "write" } })).toThrow(
       /inconsistent name/,

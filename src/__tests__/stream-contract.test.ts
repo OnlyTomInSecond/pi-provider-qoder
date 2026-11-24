@@ -4,24 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cacheQoderIdentityForTest, clearQoderAuthMemCache } from "../auth/oauth.js";
 import { staticModels } from "../catalog.js";
 import { streamQoder } from "../protocol/stream.js";
+import { decodeQoderBody, sseEnvelope } from "./helpers.js";
 
 const model = staticModels.find((model) => model.id === "Lite") as Model<Api>;
 const context = normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: 0 }] });
-function envelope(inner: unknown): string {
-  return `data: ${JSON.stringify({ statusCodeValue: 200, body: JSON.stringify(inner) })}\n\n`;
-}
+const envelope = (inner: unknown): string => sseEnvelope(inner);
 const text = (content: string) => envelope({ choices: [{ delta: { content } }] });
 const success = `${text("OK")}data: [DONE]\n\n`;
 
-function decodeBody(body: BodyInit | null | undefined): Record<string, unknown> {
-  const custom = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
-  const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  const encoded = Buffer.from(body as Uint8Array).toString("utf8");
-  const rearranged = [...encoded].map((c) => (c === "$" ? "=" : standard[custom.indexOf(c)])).join("");
-  const third = Math.floor(rearranged.length / 3);
-  const base64 = rearranged.slice(-third) + rearranged.slice(third, -third) + rearranged.slice(0, third);
-  return JSON.parse(Buffer.from(base64, "base64").toString("utf8"));
-}
+const decodeBody = (body: BodyInit | null | undefined) => decodeQoderBody({ body } as RequestInit);
 
 beforeEach(() => {
   cacheQoderIdentityForTest("qoder:fake", {

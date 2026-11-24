@@ -1,20 +1,21 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type {
-  Api,
-  AssistantMessage,
-  AssistantMessageEvent,
-  AssistantMessageEventStream,
-  Context,
-  Model,
-  ToolCall,
-  TranscriptContext,
-} from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent, Context, ToolCall } from "@earendil-works/pi-ai";
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { clearQoderModelsMemCache } from "../catalog.js";
 import type { QoderUsage } from "../credits.js";
 import { streamQoder } from "../protocol/stream.js";
+import {
+  chunk,
+  consume,
+  DONE_SSE,
+  decodeQoderBody,
+  finishChunk,
+  makeContext,
+  makeModel,
+  sseEnvelope,
+} from "./helpers.js";
 import { loadLiveFixture } from "./live-fixture.js";
 
 // Pin the identity so the mocked fetch below only ever serves the chat request.
@@ -32,57 +33,6 @@ vi.mock("../auth/oauth.js", () => ({
   }),
 }));
 
-/**
- * Build a single SSE `data:` line carrying a Qoder envelope:
- *   { headers, body: <JSON string>, statusCodeValue, statusCode }
- * The server wraps the OpenAI-style chunk inside `body` as a JSON string.
- */
-function sseEnvelope(body: object, statusCodeValue = 200, statusCode = "OK"): string {
-  return (
-    "data:" +
-    JSON.stringify({
-      headers: { "Content-Type": ["application/json"] },
-      body: JSON.stringify(body),
-      statusCodeValue,
-      statusCode,
-    }) +
-    "\n\n"
-  );
-}
-
-const DONE_SSE =
-  "data:" +
-  JSON.stringify({
-    headers: { "Content-Type": ["application/json"] },
-    body: "[DONE]",
-    statusCodeValue: 200,
-    statusCode: "OK",
-  }) +
-  "\n\n";
-
-function chunk(delta: object, extra: object = {}): object {
-  return {
-    choices: [{ delta, index: 0 }],
-    created: 1,
-    id: "test-id",
-    model: "auto",
-    object: "chat.completion.chunk",
-    ...extra,
-  };
-}
-
-function finishChunk(finish_reason: string, extra: object = {}): object {
-  return {
-    choices: [{ finish_reason, index: 0 }],
-    created: 1,
-    id: "test-id",
-    model: "auto",
-    object: "chat.completion.chunk",
-    usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 },
-    ...extra,
-  };
-}
-
 const SUCCESS_SSE = loadLiveFixture("global").interactions.chat.response.body as string;
 
 const BLOCKED_SSE = sseEnvelope(
@@ -97,46 +47,6 @@ function mockFetch(body: string): typeof fetch {
     headers: { "content-type": "text/event-stream" },
   });
   return vi.fn(async () => response) as unknown as typeof fetch;
-}
-
-function makeModel(provider = "qoder", id = "Lite"): Model<Api> {
-  return { id, api: "qoder-api" as Api, provider } as Model<Api>;
-}
-
-function makeContext(): TranscriptContext {
-  // 0.86.0+ providers receive a normalized TranscriptContext where the system
-  // prompt and tools live in a leading system message. normalizeContext folds
-  // the legacy Context shape into that form, matching what pi passes at runtime.
-  return normalizeContext({
-    systemPrompt: "test",
-    messages: [{ role: "user", content: "hi" }],
-    tools: [],
-  } as unknown as Context);
-}
-
-async function consume(stream: AssistantMessageEventStream): Promise<AssistantMessageEvent[]> {
-  const events: AssistantMessageEvent[] = [];
-  for await (const ev of stream) {
-    events.push(ev);
-    if (ev.type === "done" || ev.type === "error") break;
-  }
-  return events;
-}
-
-/** Undo the gateway's custom base64 alphabet so a request body can be asserted. */
-function decodeQoderBody(init: RequestInit | undefined): Record<string, unknown> {
-  const custom = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
-  const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  const encoded = Buffer.from(init?.body as Uint8Array).toString("utf8");
-  const rearranged = [...encoded]
-    .map((character) => (character === "$" ? "=" : standard[custom.indexOf(character)] || character))
-    .join("");
-  const third = Math.floor(rearranged.length / 3);
-  const base64 =
-    rearranged.slice(rearranged.length - third) +
-    rearranged.slice(third, rearranged.length - third) +
-    rearranged.slice(0, third);
-  return JSON.parse(Buffer.from(base64, "base64").toString("utf8")) as Record<string, unknown>;
 }
 
 function seedModelCache(configs: Record<string, unknown>): string {
@@ -206,18 +116,7 @@ describe("streamQoder", () => {
     await consume(streamQoder(makeModel("qoder", "Lite"), context, { apiKey: "fake" }));
 
     const init = vi.mocked(globalThis.fetch).mock.calls[0][1];
-    const custom = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
-    const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const encoded = Buffer.from(init?.body as Uint8Array).toString("utf8");
-    const rearranged = [...encoded]
-      .map((character) => (character === "$" ? "=" : standard[custom.indexOf(character)] || character))
-      .join("");
-    const third = Math.floor(rearranged.length / 3);
-    const base64 =
-      rearranged.slice(rearranged.length - third) +
-      rearranged.slice(third, rearranged.length - third) +
-      rearranged.slice(0, third);
-    const body = JSON.parse(Buffer.from(base64, "base64").toString("utf8")) as {
+    const body = decodeQoderBody(init) as {
       messages: Array<{ role: string; content: string }>;
       tools: Array<{ type: string; function: { name: string } }>;
     };
@@ -234,18 +133,7 @@ describe("streamQoder", () => {
     const init = vi.mocked(globalThis.fetch).mock.calls[0][1];
     expect(init?.headers).toEqual(expect.objectContaining({ "X-Model-Key": "lite" }));
 
-    const custom = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
-    const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const encoded = Buffer.from(init?.body as Uint8Array).toString("utf8");
-    const rearranged = [...encoded]
-      .map((character) => (character === "$" ? "=" : standard[custom.indexOf(character)] || character))
-      .join("");
-    const third = Math.floor(rearranged.length / 3);
-    const base64 =
-      rearranged.slice(rearranged.length - third) +
-      rearranged.slice(third, rearranged.length - third) +
-      rearranged.slice(0, third);
-    const body = JSON.parse(Buffer.from(base64, "base64").toString("utf8")) as {
+    const body = decodeQoderBody(init) as {
       chat_context: { extra: { modelConfig: { key: string } } };
       model_config: { key: string };
     };
@@ -261,21 +149,7 @@ describe("streamQoder", () => {
     await consume(streamQoder(makeModel("qoder", "Lite"), makeContext(), options));
     const firstInit = vi.mocked(globalThis.fetch).mock.calls[0][1];
 
-    const custom = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
-    const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const decodeBody = (init: RequestInit | undefined): { session_id: string } => {
-      const encoded = Buffer.from(init?.body as Uint8Array).toString("utf8");
-      const rearranged = [...encoded]
-        .map((character) => (character === "$" ? "=" : standard[custom.indexOf(character)] || character))
-        .join("");
-      const third = Math.floor(rearranged.length / 3);
-      const base64 =
-        rearranged.slice(rearranged.length - third) +
-        rearranged.slice(third, rearranged.length - third) +
-        rearranged.slice(0, third);
-      return JSON.parse(Buffer.from(base64, "base64").toString("utf8")) as { session_id: string };
-    };
-    const firstBody = decodeBody(firstInit);
+    const firstBody = decodeQoderBody(firstInit) as { session_id: string };
 
     expect(firstBody.session_id.length).toBeLessThanOrEqual(64);
     expect(firstBody.session_id).toMatch(/^qoder-session-[0-9a-f]{16}$/);
@@ -283,7 +157,7 @@ describe("streamQoder", () => {
     globalThis.fetch = mockFetch(SUCCESS_SSE);
     await consume(streamQoder(makeModel("qoder", "Lite"), makeContext(), options));
     const secondInit = vi.mocked(globalThis.fetch).mock.calls[0][1];
-    expect(decodeBody(secondInit).session_id).toBe(firstBody.session_id);
+    expect((decodeQoderBody(secondInit) as { session_id: string }).session_id).toBe(firstBody.session_id);
   });
 
   it("binds chat hosts to provider ids even when only a CN PAT is set", async () => {

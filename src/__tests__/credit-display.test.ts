@@ -11,6 +11,7 @@ import { registerQoderCreditDisplay } from "../credit-display.js";
 import { QODER_STATUS_KEY } from "../credit-footer.js";
 import { QoderQuotaService, type QuotaState } from "../quota.js";
 import type { QoderMode } from "../region.js";
+import { deferred, settle } from "./helpers.js";
 
 type FooterFactory = NonNullable<Parameters<ExtensionContext["ui"]["setFooter"]>[0]>;
 type Footer = ReturnType<FooterFactory>;
@@ -23,22 +24,6 @@ function fresh(used = 12, remaining = 88): QuotaState {
     updatedAt: 100,
     snapshot: { userQuota: { used, remaining, total: used + remaining, unit: "credits" } },
   };
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
-// Lifecycle listeners deliberately launch background work; drain its microtasks
-// without sleeps, a live network, or dependence on a particular promise depth.
-async function settle() {
-  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 function fakeService() {

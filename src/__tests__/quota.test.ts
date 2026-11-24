@@ -2,6 +2,7 @@ import type { OAuthCredentials } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchQoderUsageForMode, normalizeQoderQuotaSnapshot, type QoderProviderUsage } from "../auth/usage.js";
 import { QoderQuotaService } from "../quota.js";
+import { deferred } from "./helpers.js";
 
 const credentials: OAuthCredentials = { access: "test-account-a", refresh: "", expires: 0 };
 const otherCredentials: OAuthCredentials = { ...credentials, access: "test-account-b" };
@@ -13,16 +14,6 @@ const completeRaw = {
 
 function usage(raw: Record<string, unknown> = completeRaw): QoderProviderUsage {
   return { raw };
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
 }
 
 afterEach(() => {

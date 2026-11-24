@@ -1,16 +1,19 @@
-import type {
-  Api,
-  AssistantMessage,
-  AssistantMessageEvent,
-  AssistantMessageEventStream,
-  Context,
-  Model,
-  TranscriptContext,
-} from "@earendil-works/pi-ai";
-import { normalizeContext } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { isRetryableAssistantError, retryAssistantCall } from "@earendil-works/pi-ai/utils/retry";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseModelBusyRejection, streamQoder } from "../protocol/stream.js";
+import {
+  chunk,
+  consume,
+  DONE_SSE,
+  decodeQoderBody as decodeRequestBody,
+  doneOf,
+  sseEnvelope as envelope,
+  errorOf,
+  finishChunk,
+  makeContext,
+  makeModel,
+} from "./helpers.js";
 
 vi.mock("../auth/oauth.js", () => ({
   resolveQoderIdentity: vi.fn().mockResolvedValue({
@@ -23,43 +26,6 @@ vi.mock("../auth/oauth.js", () => ({
     expires: 0,
   }),
 }));
-
-function envelope(body: string, statusCodeValue = 200, statusCode = "OK"): string {
-  return (
-    "data:" +
-    JSON.stringify({
-      headers: { "Content-Type": ["application/json"] },
-      body,
-      statusCodeValue,
-      statusCode,
-    }) +
-    "\n\n"
-  );
-}
-
-const DONE_SSE = envelope("[DONE]");
-
-function chunk(delta: object, extra: object = {}): object {
-  return {
-    choices: [{ delta, index: 0 }],
-    created: 1,
-    id: "test-id",
-    model: "auto",
-    object: "chat.completion.chunk",
-    ...extra,
-  };
-}
-
-function finishChunk(finishReason: string): object {
-  return {
-    choices: [{ finish_reason: finishReason, index: 0 }],
-    created: 1,
-    id: "test-id",
-    model: "auto",
-    object: "chat.completion.chunk",
-    usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 },
-  };
-}
 
 /** The exact three-layer nesting Qoder returns for a busy model. */
 function busyBody(
@@ -111,56 +77,6 @@ function mockFetchSequence(steps: FetchStep[]): typeof fetch {
 /** A chunk with no id/model so tests can prove those fields were not carried over. */
 function bareChunk(delta: object): object {
   return { choices: [{ delta, index: 0 }], created: 1, object: "chat.completion.chunk" };
-}
-
-function makeModel(): Model<Api> {
-  return { id: "Ultimate", api: "qoder-api" as Api, provider: "qoder" } as Model<Api>;
-}
-
-function makeContext(): TranscriptContext {
-  // 0.86.0+ providers receive a normalized TranscriptContext where the system
-  // prompt and tools live in a leading system message.
-  return normalizeContext({
-    systemPrompt: "test",
-    messages: [{ role: "user", content: "hi" }],
-    tools: [],
-  } as unknown as Context);
-}
-
-async function consume(stream: AssistantMessageEventStream): Promise<AssistantMessageEvent[]> {
-  const events: AssistantMessageEvent[] = [];
-  for await (const event of stream) {
-    events.push(event);
-    if (event.type === "done" || event.type === "error") break;
-  }
-  return events;
-}
-
-function errorOf(events: AssistantMessageEvent[]): AssistantMessage {
-  const error = events.find((event) => event.type === "error");
-  expect(error, "expected an error event").toBeDefined();
-  return (error as { error: AssistantMessage }).error;
-}
-
-function doneOf(events: AssistantMessageEvent[]): AssistantMessage {
-  const done = events.find((event) => event.type === "done");
-  expect(done, "expected a done event").toBeDefined();
-  return (done as { message: AssistantMessage }).message;
-}
-
-function decodeRequestBody(init: RequestInit | undefined): Record<string, unknown> {
-  const custom = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
-  const standard = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  const encoded = Buffer.from(init?.body as Uint8Array).toString("utf8");
-  const rearranged = [...encoded]
-    .map((character) => (character === "$" ? "=" : standard[custom.indexOf(character)] || character))
-    .join("");
-  const third = Math.floor(rearranged.length / 3);
-  const base64 =
-    rearranged.slice(rearranged.length - third) +
-    rearranged.slice(third, rearranged.length - third) +
-    rearranged.slice(0, third);
-  return JSON.parse(Buffer.from(base64, "base64").toString("utf8")) as Record<string, unknown>;
 }
 
 describe("parseModelBusyRejection", () => {

@@ -1,12 +1,6 @@
-import type {
-  Api,
-  AssistantMessageEvent,
-  AssistantMessageEventStream,
-  Model,
-  SimpleStreamOptions,
-  TranscriptContext,
-} from "@earendil-works/pi-ai";
+import type { AssistantMessageEvent, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { chunk, consume, DONE_SSE, finishChunk, makeContext, makeModel, sseEnvelope } from "./helpers.js";
 
 // Override the host parser so this integration test stays independent of the
 // installed pi-ai version: whatever the host exposes, the plugin must forward
@@ -35,50 +29,7 @@ vi.mock("../auth/oauth.js", () => ({
   }),
 }));
 
-const { normalizeContext } = await import("@earendil-works/pi-ai");
 const { streamQoder } = await import("../protocol/stream.js");
-
-function sseEnvelope(body: object): string {
-  return `data:${JSON.stringify({ headers: { "Content-Type": ["application/json"] }, body: JSON.stringify(body), statusCodeValue: 200, statusCode: "OK" })}\n\n`;
-}
-
-const DONE_SSE = `data:${JSON.stringify({ body: "[DONE]", statusCodeValue: 200, statusCode: "OK" })}\n\n`;
-
-function chunk(delta: object): object {
-  return { choices: [{ delta, index: 0 }], created: 1, id: "id", model: "auto", object: "chat.completion.chunk" };
-}
-
-function finishChunk(finish_reason: string): object {
-  return {
-    choices: [{ finish_reason, index: 0 }],
-    created: 1,
-    id: "id",
-    model: "auto",
-    object: "chat.completion.chunk",
-    usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 },
-  };
-}
-
-function makeModel(): Model<Api> {
-  return { id: "Lite", api: "qoder-api" as Api, provider: "qoder" } as Model<Api>;
-}
-
-function makeContext(): TranscriptContext {
-  return normalizeContext({
-    systemPrompt: "test",
-    messages: [{ role: "user", content: "hi" }],
-    tools: [],
-  } as unknown as Parameters<typeof normalizeContext>[0]);
-}
-
-async function consume(stream: AssistantMessageEventStream): Promise<AssistantMessageEvent[]> {
-  const events: AssistantMessageEvent[] = [];
-  for await (const event of stream) {
-    events.push(event);
-    if (event.type === "done" || event.type === "error") break;
-  }
-  return events;
-}
 
 const originalFetch = globalThis.fetch;
 beforeEach(() => {

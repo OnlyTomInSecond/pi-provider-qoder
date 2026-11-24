@@ -1,6 +1,7 @@
-import type { Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isDegenerateDsmlTurn, stripDsmlResidue, stripThinkingTags, ThinkingTagParser } from "../protocol/thinking.js";
+import { makeMessage } from "./helpers.js";
 
 function createMockStream() {
   const events: AssistantMessageEvent[] = [];
@@ -15,33 +16,13 @@ function createMockStream() {
   return { stream, push, events };
 }
 
-function createOutput(): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [],
-    api: "qoder-api" as Api,
-    provider: "qoder",
-    model: "test",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "stop",
-    timestamp: Date.now(),
-  } as AssistantMessage;
-}
-
 describe("ThinkingTagParser", () => {
   let output: AssistantMessage;
   let stream: AssistantMessageEventStream;
   let pushMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    output = createOutput();
+    output = makeMessage({ stopReason: "stop", timestamp: Date.now() });
     const mock = createMockStream();
     stream = mock.stream;
     pushMock = mock.push;

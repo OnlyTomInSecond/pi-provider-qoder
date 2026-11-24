@@ -1,26 +1,7 @@
-import type { Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ThinkingSink } from "../protocol/thinking-sink.js";
-
-function createOutput(): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [],
-    api: "qoder-api" as Api,
-    provider: "qoder",
-    model: "test",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "pending",
-    timestamp: 0,
-  };
-}
+import { makeMessage } from "./helpers.js";
 
 const stream = { push: () => {}, end: () => {} } as unknown as AssistantMessageEventStream;
 
@@ -30,7 +11,7 @@ describe("ThinkingSink", () => {
   let sink: ThinkingSink;
 
   beforeEach(() => {
-    output = createOutput();
+    output = makeMessage();
     events = [];
     sink = new ThinkingSink(output, stream, (event) => events.push(event), { parseTags: true });
   });
